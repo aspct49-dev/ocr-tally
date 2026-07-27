@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tally OCR Review</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brandMark" aria-hidden="true">T</span>
+        <div>
+          <h1>Tally OCR</h1>
+          <p>Invoice review workspace</p>
+        </div>
+      </div>
+      <div class="serviceCluster">
+        <span class="guardrail">Review required before export</span>
+        <div class="status" id="serviceStatus"><span class="statusDot"></span>Checking service</div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="sidebar">
+        <section class="capturePanel">
+          <div class="panelHead">
+            <div>
+              <p class="eyebrow">New document</p>
+              <h2>Scan a bill</h2>
+            </div>
+          </div>
+          <form id="uploadForm">
+            <label class="dropzone" for="fileInput">
+              <span class="uploadGlyph" aria-hidden="true">+</span>
+              <strong>Choose image or PDF</strong>
+              <small>Up to 25 MB</small>
+              <input id="fileInput" name="document" type="file" accept="image/*,.pdf">
+            </label>
+            <div id="fileSelection" class="fileSelection" hidden></div>
+            <button class="primary fullWidth" type="submit">Extract document</button>
+          </form>
+          <div class="camera">
+            <div id="videoWrap" class="videoWrap" hidden>
+              <video id="cameraVideo" playsinline muted></video>
+              <canvas id="captureCanvas" hidden></canvas>
+            </div>
+            <div class="buttonRow">
+              <button id="startCamera" class="secondary fullWidth" type="button">Use camera</button>
+              <button id="capturePhoto" class="primary fullWidth" type="button" hidden disabled>Capture bill</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="queuePanel">
+          <div class="panelHead">
+            <div>
+              <p class="eyebrow">Work queue</p>
+              <h2>Invoices <span id="queueCount" class="countBadge">0</span></h2>
+            </div>
+            <button id="refreshInvoices" class="iconButton" type="button" title="Refresh invoices" aria-label="Refresh invoices">&#8635;</button>
+          </div>
+          <div class="filters">
+            <button data-filter="all" class="active" type="button">All <span id="allCount">0</span></button>
+            <button data-filter="pending_review" type="button">Review <span id="reviewCount">0</span></button>
+            <button data-filter="approved" type="button">Approved <span id="approvedCount">0</span></button>
+          </div>
+          <div id="invoiceList" class="invoiceList"></div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <nav class="tabs" aria-label="Workspace views">
+          <button class="active" data-tab="review" type="button">Review</button>
+          <button data-tab="mapping" type="button">Ledger mapping</button>
+          <button data-tab="audit" type="button">Audit</button>
+        </nav>
+
+        <section id="reviewTab" class="tabView active">
+          <div id="emptyState" class="emptyState">
+            <div class="emptyGlyph" aria-hidden="true">+</div>
+            <h2>Add your first invoice</h2>
+            <p>Upload a bill or use the camera to begin review.</p>
+          </div>
+
+          <div id="reviewPane" class="reviewGrid" hidden>
+            <section class="documentPane">
+              <div class="panelHead">
+                <div>
+                  <p class="eyebrow">Source document</p>
+                  <h2>Original</h2>
+                </div>
+                <a id="originalLink" class="textLink" target="_blank" rel="noreferrer">Open file</a>
+              </div>
+              <iframe id="originalFrame" title="Original invoice"></iframe>
+            </section>
+
+            <section class="reviewPanel">
+              <div class="panelHead">
+                <div>
+                  <p class="eyebrow">Human review</p>
+                  <h2>Invoice details</h2>
+                  <p id="invoiceMeta"></p>
+                </div>
+                <span id="statusPill" class="pill"></span>
+              </div>
+
+              <div id="validationBox" class="validationBox"></div>
+
+              <form id="reviewForm" class="fieldGrid">
+                <label>Supplier
+                  <input name="supplier" autocomplete="off">
+                  <small data-confidence="supplier"></small>
+                </label>
+                <label>Invoice number
+                  <input name="invoiceNumber" autocomplete="off">
+                  <small data-confidence="invoiceNumber"></small>
+                </label>
+                <label>Invoice date
+                  <input name="invoiceDate" type="date">
+                  <small data-confidence="invoiceDate"></small>
+                </label>
+                <label>GSTIN
+                  <input name="gstin" autocomplete="off">
+                  <small data-confidence="gstin"></small>
+                </label>
+                <label>Taxable amount
+                  <input name="taxableAmount" type="number" step="0.01">
+                  <small data-confidence="taxableAmount"></small>
+                </label>
+                <label>CGST
+                  <input name="cgst" type="number" step="0.01">
+                  <small data-confidence="cgst"></small>
+                </label>
+                <label>SGST
+                  <input name="sgst" type="number" step="0.01">
+                  <small data-confidence="sgst"></small>
+                </label>
+                <label>IGST
+                  <input name="igst" type="number" step="0.01">
+                  <small data-confidence="igst"></small>
+                </label>
+                <label>Total amount
+                  <input name="totalAmount" type="number" step="0.01">
+                  <small data-confidence="totalAmount"></small>
+                </label>
+                <label>Reviewer
+                  <input name="reviewer" autocomplete="name" placeholder="Finance reviewer">
+                </label>
+                <label class="wide">Review notes
+                  <textarea name="notes" rows="3" placeholder="Correction reason or approval notes"></textarea>
+                </label>
+              </form>
+
+              <section class="subsection">
+                <div class="panelHead compact">
+                  <h3>Line items</h3>
+                  <button id="addLineItem" class="secondary" type="button">+ Add line</button>
+                </div>
+                <div id="lineItems" class="lineItems"></div>
+              </section>
+
+              <section class="subsection rawSection">
+                <div class="panelHead compact">
+                  <h3>Raw OCR text</h3>
+                  <button id="toggleRaw" class="secondary" type="button">Show</button>
+                </div>
+                <pre id="rawText" class="rawText" hidden></pre>
+              </section>
+
+              <div class="actions">
+                <div class="actionGroup">
+                  <button id="saveReview" class="secondary" type="button">Save review</button>
+                  <button id="approveInvoice" class="primary" type="button">Approve for export</button>
+                </div>
+                <div class="exportGroup" aria-label="Export approved invoice">
+                  <span>Export</span>
+                  <a id="exportXml" class="export disabled">Tally XML</a>
+                  <a id="exportCsv" class="export disabled">CSV</a>
+                  <a id="exportJson" class="export disabled">JSON</a>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="mappingTab" class="tabView">
+          <section class="panel settingsPanel">
+            <div class="panelHead">
+              <div>
+                <p class="eyebrow">Export settings</p>
+                <h2>Ledger and party mapping</h2>
+                <p>Set the Tally ledger names used in approved exports.</p>
+              </div>
+              <button id="saveMappings" class="primary" type="button">Save mappings</button>
+            </div>
+            <div class="fieldGrid settingsGrid">
+              <label>Default purchase ledger
+                <input id="defaultPurchaseLedger">
+              </label>
+              <label>Default CGST ledger
+                <input id="defaultCgstLedger">
+              </label>
+              <label>Default SGST ledger
+                <input id="defaultSgstLedger">
+              </label>
+              <label>Default IGST ledger
+                <input id="defaultIgstLedger">
+              </label>
+            </div>
+            <div class="panelHead compact sectionDivider">
+              <h3>Supplier-specific mappings</h3>
+              <button id="addMapping" class="secondary" type="button">+ Add mapping</button>
+            </div>
+            <div id="supplierMappings" class="mappingRows"></div>
+          </section>
+        </section>
+
+        <section id="auditTab" class="tabView">
+          <section class="panel settingsPanel">
+            <div class="panelHead">
+              <div>
+                <p class="eyebrow">Traceability</p>
+                <h2>Audit trail</h2>
+              </div>
+            </div>
+            <div id="auditTrail" class="auditTrail"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

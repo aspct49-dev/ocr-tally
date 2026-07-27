@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Runtime invoice data and retained originals
+data/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db
+
