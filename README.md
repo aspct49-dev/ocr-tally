@@ -86,6 +86,11 @@ Vercel temporary storage is suitable for a demonstration only. Records can be
 lost when a function instance is replaced or restarted. Use persistent object
 storage and a database before using the hosted app for real accounting work.
 
+Vercel limits function request bodies to 4.5 MB. The browser automatically
+resizes large invoice images before upload; PDFs must be under 4 MB. Text-based
+PDFs are extracted directly in JavaScript, while scanned PDFs render up to
+three pages and pass them through OCR.
+
 ## Use
 
 1. Start the app and open `http://localhost:4173`.

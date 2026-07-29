@@ -3,7 +3,7 @@
   "functions": {
     "api/index.mjs": {
       "maxDuration": 60,
-      "includeFiles": "public/**"
+      "includeFiles": "{public/**,eng.traineddata}"
     }
   },
   "rewrites": [

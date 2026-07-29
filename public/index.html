@@ -40,11 +40,12 @@
             <label class="dropzone" for="fileInput">
               <span class="uploadGlyph" aria-hidden="true"><i data-lucide="file-up"></i></span>
               <strong>Choose Image Or PDF</strong>
-              <small>PNG, JPG, TIFF, WebP or PDF · up to 25&nbsp;MB</small>
+              <small>Images are optimized automatically; PDFs up to 4&nbsp;MB</small>
               <input id="fileInput" name="document" type="file" accept="image/*,.pdf" autocomplete="off">
             </label>
             <div id="fileSelection" class="fileSelection" hidden></div>
-            <button class="primary fullWidth" type="submit">
+            <p id="uploadMessage" class="uploadMessage" role="alert" hidden></p>
+            <button id="extractDocument" class="primary fullWidth" type="submit">
               <i data-lucide="scan-text" aria-hidden="true"></i>
               Extract Document
             </button>

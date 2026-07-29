@@ -20,6 +20,8 @@ const dateFormatter = new Intl.DateTimeFormat("en-IN", {
   month: "short",
   year: "numeric"
 });
+const HOSTED_UPLOAD_LIMIT = 4 * 1024 * 1024;
+const IMAGE_TARGET_EDGE = 2000;
 
 function refreshIcons() {
   if (window.lucide) window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
@@ -33,6 +35,12 @@ function toast(message) {
   toast.timeout = window.setTimeout(() => node.classList.remove("show"), 3200);
 }
 
+function setUploadMessage(message = "") {
+  const node = $("#uploadMessage");
+  node.textContent = message;
+  node.hidden = !message;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   if (!response.ok) {
@@ -42,6 +50,9 @@ async function api(path, options = {}) {
       detail = payload.error || response.statusText;
     } catch (_) {
       detail = response.statusText;
+    }
+    if (response.status === 413) {
+      detail = "This file is too large for the hosted demo. Use an image or PDF under 4 MB.";
     }
     throw new Error(detail);
   }
@@ -537,19 +548,79 @@ async function decideInvoice(action) {
   }[action]);
 }
 
+async function imageBlob(canvas, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      blob => blob ? resolve(blob) : reject(new Error("The image could not be prepared for upload.")),
+      "image/jpeg",
+      quality
+    );
+  });
+}
+
+async function prepareUploadFile(file) {
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  if (isPdf) {
+    if (file.size > HOSTED_UPLOAD_LIMIT) {
+      throw new Error("This PDF is over 4 MB. Use a smaller PDF or upload the invoice page as a JPG or PNG.");
+    }
+    return file;
+  }
+  if (!file.type.startsWith("image/")) return file;
+  if (!window.createImageBitmap) {
+    if (file.size > HOSTED_UPLOAD_LIMIT) {
+      throw new Error("This image is over 4 MB and this browser cannot optimize it. Use a smaller JPG or PNG.");
+    }
+    return file;
+  }
+
+  const bitmap = await createImageBitmap(file);
+  try {
+    const longestEdge = Math.max(bitmap.width, bitmap.height);
+    if (longestEdge <= IMAGE_TARGET_EDGE && file.size < HOSTED_UPLOAD_LIMIT) return file;
+    const scale = Math.min(1, IMAGE_TARGET_EDGE / longestEdge);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d", { alpha: false }).drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    let blob = await imageBlob(canvas, 0.84);
+    if (blob.size > HOSTED_UPLOAD_LIMIT) blob = await imageBlob(canvas, 0.68);
+    if (blob.size > HOSTED_UPLOAD_LIMIT) {
+      throw new Error("The optimized image is still over 4 MB. Crop it to the invoice and try again.");
+    }
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "invoice";
+    return new File([blob], `${baseName}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+  } finally {
+    bitmap.close();
+  }
+}
+
 async function uploadForm(formData) {
+  const button = $("#extractDocument");
+  setUploadMessage();
   setServiceStatus("Extracting Invoice…", "working");
-  const invoice = await api("/api/invoices", { method: "POST", body: formData });
-  state.invoices.unshift(invoice);
-  state.selectedId = invoice.id;
-  renderInvoices();
-  renderDashboard();
-  renderReview();
-  setServiceStatus("Local Service Ready");
-  $("#fileInput").value = "";
-  $("#fileSelection").hidden = true;
-  switchTab("review");
-  toast("OCR Extraction Complete");
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Extracting…';
+  try {
+    const invoice = await api("/api/invoices", { method: "POST", body: formData });
+    state.invoices.unshift(invoice);
+    state.selectedId = invoice.id;
+    renderInvoices();
+    renderDashboard();
+    renderReview();
+    $("#fileInput").value = "";
+    $("#fileSelection").hidden = true;
+    switchTab("review");
+    toast("OCR Extraction Complete");
+  } catch (error) {
+    setUploadMessage(error.message);
+    throw error;
+  } finally {
+    setServiceStatus("Service Ready");
+    button.disabled = false;
+    button.innerHTML = '<i data-lucide="scan-text" aria-hidden="true"></i>Extract Document';
+    refreshIcons();
+  }
 }
 
 async function startCamera() {
@@ -565,12 +636,13 @@ async function startCamera() {
 async function capturePhoto() {
   const video = $("#cameraVideo");
   const canvas = $("#captureCanvas");
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+  const scale = Math.min(1, IMAGE_TARGET_EDGE / Math.max(video.videoWidth, video.videoHeight));
+  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
   canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png", 0.95));
+  const blob = await imageBlob(canvas, 0.86);
   const formData = new FormData();
-  formData.append("document", blob, `camera-${Date.now()}.png`);
+  formData.append("document", blob, `camera-${Date.now()}.jpg`);
   await uploadForm(formData);
 }
 
@@ -595,6 +667,7 @@ function bindEvents() {
   $("#fileInput").addEventListener("change", event => {
     const file = event.target.files[0];
     const selection = $("#fileSelection");
+    setUploadMessage();
     selection.hidden = !file;
     selection.textContent = file ? `${file.name} (${Math.max(1, Math.round(file.size / 1024))}\u00A0KB)` : "";
   });
@@ -603,12 +676,15 @@ function bindEvents() {
     event.preventDefault();
     const file = $("#fileInput").files[0];
     if (!file) return toast("Choose An Invoice Image Or PDF");
-    const formData = new FormData();
-    formData.append("document", file, file.name);
     try {
+      setServiceStatus("Preparing Document…", "working");
+      const prepared = await prepareUploadFile(file);
+      const formData = new FormData();
+      formData.append("document", prepared, prepared.name);
       await uploadForm(formData);
     } catch (error) {
-      setServiceStatus("Local Service Ready");
+      setServiceStatus("Service Ready");
+      setUploadMessage(error.message);
       toast(error.message);
     }
   });

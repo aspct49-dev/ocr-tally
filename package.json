@@ -4,11 +4,16 @@
   "private": true,
   "description": "Local OCR bill and invoice review tool with Tally XML, CSV, and JSON export.",
   "main": "server.js",
+  "engines": {
+    "node": ">=20.16"
+  },
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check public/app.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.100",
+    "pdfjs-dist": "^5.4.149",
     "tesseract.js": "^6.0.1"
   }
 }

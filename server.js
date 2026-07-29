@@ -20,7 +20,7 @@ const TMP_DIR = path.join(DATA_DIR, "tmp");
 const INVOICES_FILE = path.join(DATA_DIR, "invoices.json");
 const MAPPINGS_FILE = path.join(DATA_DIR, "mappings.json");
 const PORT = Number(process.env.PORT || 4173);
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = IS_SERVERLESS ? Math.floor(4.25 * 1024 * 1024) : 25 * 1024 * 1024;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -133,12 +133,21 @@ function audit(invoice, action, details = {}) {
 }
 
 async function readBody(req) {
+  if (req.body !== undefined && req.body !== null) {
+    if (Buffer.isBuffer(req.body)) return req.body;
+    if (req.body instanceof Uint8Array) return Buffer.from(req.body);
+    if (typeof req.body === "string") return Buffer.from(req.body);
+    return Buffer.from(JSON.stringify(req.body));
+  }
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
     if (size > MAX_UPLOAD_BYTES) {
-      throw new Error("Upload is larger than 25 MB.");
+      const limit = IS_SERVERLESS ? "4 MB" : "25 MB";
+      const error = new Error(`Upload is larger than ${limit}.`);
+      error.statusCode = 413;
+      throw error;
     }
     chunks.push(chunk);
   }
@@ -188,9 +197,21 @@ function extensionForUpload(upload) {
 
 async function ocrImage(filePath) {
   const Tesseract = loadTesseract();
-  const result = await Tesseract.recognize(filePath, "eng", {
-    logger: () => {}
-  });
+  const options = {
+    logger: () => {},
+    cachePath: TMP_DIR
+  };
+  const localLanguage = path.join(ROOT, "eng.traineddata");
+  if (fs.existsSync(localLanguage)) {
+    options.langPath = ROOT;
+    options.gzip = false;
+  }
+  try {
+    options.workerPath = require.resolve("tesseract.js/src/worker-script/node/index.js");
+  } catch (_) {
+    // Tesseract can resolve its own worker in local development.
+  }
+  const result = await Tesseract.recognize(filePath, "eng", options);
   return {
     text: result.data.text || "",
     confidence: Math.round(result.data.confidence || 0)
@@ -227,7 +248,97 @@ function run(command, args, options = {}) {
   });
 }
 
+async function extractPdfTextWithJs(filePath) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const data = new Uint8Array(await fsp.readFile(filePath));
+  const document = await pdfjs.getDocument({
+    data,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    useWorkerFetch: false
+  }).promise;
+  const pages = [];
+  try {
+    for (let pageNumber = 1; pageNumber <= Math.min(document.numPages, 10); pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
+      pages.push(content.items.map(item => item.str || "").join(" "));
+      page.cleanup();
+    }
+  } finally {
+    await document.destroy();
+  }
+  return pages.join("\n");
+}
+
+async function renderPdfPagesWithJs(filePath) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const { createCanvas } = require("@napi-rs/canvas");
+  const data = new Uint8Array(await fsp.readFile(filePath));
+  const document = await pdfjs.getDocument({
+    data,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    useWorkerFetch: false
+  }).promise;
+  const files = [];
+  try {
+    for (let pageNumber = 1; pageNumber <= Math.min(document.numPages, 3); pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+      const canvasContext = canvas.getContext("2d");
+      await page.render({ canvasContext, viewport }).promise;
+      const outputPath = path.join(TMP_DIR, `${crypto.randomUUID()}-${pageNumber}.png`);
+      await fsp.writeFile(outputPath, canvas.toBuffer("image/png"));
+      files.push(outputPath);
+      page.cleanup();
+    }
+  } finally {
+    await document.destroy();
+  }
+  return files;
+}
+
 async function extractPdf(filePath) {
+  let extracted = "";
+  let pdfJsError = null;
+  try {
+    extracted = await extractPdfTextWithJs(filePath);
+  } catch (error) {
+    pdfJsError = error;
+  }
+  if (extracted.trim().length >= 30) {
+    return { text: extracted, confidence: 80, mode: "pdf-text" };
+  }
+
+  let renderedFiles = [];
+  try {
+    renderedFiles = await renderPdfPagesWithJs(filePath);
+    const pageResults = [];
+    for (const pageFile of renderedFiles) {
+      pageResults.push(await ocrImage(pageFile));
+    }
+    const textValue = pageResults.map(item => item.text).join("\n");
+    if (textValue.trim()) {
+      return {
+        text: textValue,
+        confidence: Math.round(pageResults.reduce((sum, item) => sum + item.confidence, 0) / pageResults.length),
+        mode: "pdf-ocr"
+      };
+    }
+  } catch (error) {
+    pdfJsError = error;
+  } finally {
+    await Promise.all(renderedFiles.map(file => fsp.unlink(file).catch(() => {})));
+  }
+  if (IS_SERVERLESS) {
+    const detail = pdfJsError ? ` Details: ${pdfJsError.message}` : "";
+    const error = new Error(`Scanned PDF OCR failed. Try uploading the invoice page as a JPG or PNG.${detail}`);
+    error.statusCode = 422;
+    throw error;
+  }
+
   const python = findExecutable("PYTHON", ["python", "python.exe"], "python");
   const code = [
     "import json, pathlib, pdfplumber, sys",
@@ -238,7 +349,6 @@ async function extractPdf(filePath) {
     "        texts.append(page.extract_text() or '')",
     "print(json.dumps({'text':'\\n'.join(texts)}))"
   ].join("\n");
-  let extracted = "";
   try {
     const output = await run(python, ["-c", code, filePath]);
     extracted = JSON.parse(output).text || "";
@@ -753,11 +863,16 @@ async function handleUpload(req, res) {
   await fsp.writeFile(filePath, upload.buffer);
 
   let extraction;
-  if (ext === ".pdf") {
-    extraction = await extractPdf(filePath);
-  } else {
-    extraction = await ocrImage(filePath);
-    extraction.mode = "image-ocr";
+  try {
+    if (ext === ".pdf") {
+      extraction = await extractPdf(filePath);
+    } else {
+      extraction = await ocrImage(filePath);
+      extraction.mode = "image-ocr";
+    }
+  } catch (error) {
+    await fsp.unlink(filePath).catch(() => {});
+    throw error;
   }
 
   const parsed = extractInvoiceFields(extraction.text, extraction.confidence);
@@ -940,8 +1055,8 @@ async function router(req, res) {
 
     if (route === "/api/health") return json(res, 200, { ok: true, app: "tally-ocr-mvp" });
     if (route === "/api/invoices" && req.method === "GET") return json(res, 200, await readValidatedInvoices());
-    if (route === "/api/invoices" && req.method === "POST") return handleUpload(req, res);
-    if (route === "/api/tally/status" && req.method === "GET") return tallyConnectionStatus(res);
+    if (route === "/api/invoices" && req.method === "POST") return await handleUpload(req, res);
+    if (route === "/api/tally/status" && req.method === "GET") return await tallyConnectionStatus(res);
     if (route === "/api/reports/processing.csv" && req.method === "GET") {
       const invoices = await readJson(INVOICES_FILE, []);
       const mappings = await readJson(MAPPINGS_FILE, {});
@@ -961,10 +1076,10 @@ async function router(req, res) {
     const invoiceMatch = route.match(/^\/api\/invoices\/([^/]+)(?:\/([^/]+))?$/);
     if (invoiceMatch) {
       const [, id, action] = invoiceMatch;
-      if (req.method === "PUT" && !action) return updateInvoice(req, res, id, "save");
-      if (req.method === "POST" && ["approve", "needs-correction", "reject"].includes(action)) return updateInvoice(req, res, id, action);
-      if (req.method === "DELETE" && !action) return deleteInvoice(res, id);
-      if (req.method === "GET" && ["xml", "csv", "json"].includes(action)) return exportInvoice(res, id, action);
+      if (req.method === "PUT" && !action) return await updateInvoice(req, res, id, "save");
+      if (req.method === "POST" && ["approve", "needs-correction", "reject"].includes(action)) return await updateInvoice(req, res, id, action);
+      if (req.method === "DELETE" && !action) return await deleteInvoice(res, id);
+      if (req.method === "GET" && ["xml", "csv", "json"].includes(action)) return await exportInvoice(res, id, action);
       if (req.method === "GET" && action === "original") {
         const invoices = await readJson(INVOICES_FILE, []);
         const invoice = invoices.find(item => item.id === id);
@@ -975,11 +1090,11 @@ async function router(req, res) {
       }
     }
 
-    if (req.method === "GET") return serveStatic(req, res);
+    if (req.method === "GET") return await serveStatic(req, res);
     notFound(res);
   } catch (error) {
-    console.error(error);
-    json(res, 500, { error: error.message || "Unexpected server error." });
+    if (!error.statusCode || error.statusCode >= 500) console.error(error);
+    json(res, error.statusCode || 500, { error: error.message || "Unexpected server error." });
   }
 }
 

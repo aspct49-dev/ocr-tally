@@ -64,3 +64,14 @@ Tested on 29 July 2026 against the updated local app:
 - Desktop layout: no horizontal overflow at 1,440 x 900.
 - Mobile layout: no horizontal overflow at 375 x 812; dashboard cards and review controls remained readable.
 - Browser console: no warnings or errors.
+
+## Vercel upload compatibility
+
+Tested on 29 July 2026 through the exported Vercel request handler:
+
+- Receipt image OCR: HTTP 201 in 1.1 seconds; invoice number and supplier extracted.
+- Text PDF extraction: HTTP 201 in under one second.
+- Scanned PDF OCR: HTTP 201 in 1.5 seconds after JavaScript page rendering.
+- Oversized request: controlled HTTP 413 response; the server remained available.
+- Pre-parsed JSON request: mapping update returned HTTP 200.
+- Local OCR assets: English language data loaded from the deployment bundle without a runtime download.
