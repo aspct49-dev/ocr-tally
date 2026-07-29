@@ -75,3 +75,13 @@ Tested on 29 July 2026 through the exported Vercel request handler:
 - Oversized request: controlled HTTP 413 response; the server remained available.
 - Pre-parsed JSON request: mapping update returned HTTP 200.
 - Local OCR assets: English language data loaded from the deployment bundle without a runtime download.
+
+After reproducing a 120-second serverless OCR timeout on the public Vercel
+deployment, OCR was moved to the browser:
+
+- Browser receipt image: completed with 94% OCR confidence.
+- Browser text PDF: completed with 80% extraction confidence.
+- Browser scanned PDF: completed with 93% OCR confidence.
+- Saved records used `browser-image-ocr`, `browser-pdf-text`, and
+  `browser-pdf-ocr` extraction modes.
+- Browser console: no warnings or errors.

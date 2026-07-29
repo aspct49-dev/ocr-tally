@@ -88,8 +88,9 @@ storage and a database before using the hosted app for real accounting work.
 
 Vercel limits function request bodies to 4.5 MB. The browser automatically
 resizes large invoice images before upload; PDFs must be under 4 MB. Text-based
-PDFs are extracted directly in JavaScript, while scanned PDFs render up to
-three pages and pass them through OCR.
+PDFs are extracted directly in the browser, while scanned PDFs render up to
+three pages and pass them through browser OCR. The bundled OCR worker, core,
+and English language model avoid long-running serverless OCR jobs.
 
 ## Use
 

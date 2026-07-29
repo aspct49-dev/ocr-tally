@@ -26,7 +26,10 @@ const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".gz": "application/gzip",
+  ".wasm": "application/wasm",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -75,8 +78,8 @@ function json(res, status, body) {
   res.end(payload);
 }
 
-function text(res, status, body, contentType = "text/plain; charset=utf-8") {
-  res.writeHead(status, { "content-type": contentType, "cache-control": "no-store" });
+function text(res, status, body, contentType = "text/plain; charset=utf-8", cacheControl = "no-store") {
+  res.writeHead(status, { "content-type": contentType, "cache-control": cacheControl });
   res.end(body);
 }
 
@@ -311,6 +314,11 @@ async function extractPdf(filePath) {
   if (extracted.trim().length >= 30) {
     return { text: extracted, confidence: 80, mode: "pdf-text" };
   }
+  if (IS_SERVERLESS) {
+    const error = new Error("This scanned PDF requires browser OCR. Refresh the page and upload it again.");
+    error.statusCode = 422;
+    throw error;
+  }
 
   let renderedFiles = [];
   try {
@@ -332,13 +340,6 @@ async function extractPdf(filePath) {
   } finally {
     await Promise.all(renderedFiles.map(file => fsp.unlink(file).catch(() => {})));
   }
-  if (IS_SERVERLESS) {
-    const detail = pdfJsError ? ` Details: ${pdfJsError.message}` : "";
-    const error = new Error(`Scanned PDF OCR failed. Try uploading the invoice page as a JPG or PNG.${detail}`);
-    error.statusCode = 422;
-    throw error;
-  }
-
   const python = findExecutable("PYTHON", ["python", "python.exe"], "python");
   const code = [
     "import json, pathlib, pdfplumber, sys",
@@ -849,7 +850,7 @@ function createCsv(invoice, mappings) {
 
 async function handleUpload(req, res) {
   const body = await readBody(req);
-  const { files } = parseMultipart(req, body);
+  const { fields, files } = parseMultipart(req, body);
   const upload = files.document;
   if (!upload || !upload.buffer.length) {
     return json(res, 400, { error: "Upload an invoice image or PDF." });
@@ -864,8 +865,18 @@ async function handleUpload(req, res) {
 
   let extraction;
   try {
-    if (ext === ".pdf") {
+    if (fields.clientOcr === "true") {
+      extraction = {
+        text: fields.extractedText || "",
+        confidence: Math.max(0, Math.min(100, Number(fields.ocrConfidence) || 0)),
+        mode: fields.extractionMode || "browser-ocr"
+      };
+    } else if (ext === ".pdf") {
       extraction = await extractPdf(filePath);
+    } else if (IS_SERVERLESS) {
+      const error = new Error("Browser OCR data was not received. Refresh the page and try again.");
+      error.statusCode = 422;
+      throw error;
     } else {
       extraction = await ocrImage(filePath);
       extraction.mode = "image-ocr";
@@ -1041,7 +1052,10 @@ async function serveStatic(req, res) {
   if (!filePath.startsWith(PUBLIC_DIR)) return notFound(res);
   try {
     const data = await fsp.readFile(filePath);
-    text(res, 200, data, MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream");
+    const cacheControl = pathname.startsWith("/vendor/")
+      ? "public, max-age=31536000, immutable"
+      : "no-store";
+    text(res, 200, data, MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream", cacheControl);
   } catch (_) {
     notFound(res);
   }

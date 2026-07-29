@@ -4,6 +4,7 @@ const state = {
   filter: "all",
   mappings: null,
   stream: null,
+  ocrWorkerPromise: null,
   activeTab: new URLSearchParams(window.location.search).get("view") || "dashboard"
 };
 
@@ -595,12 +596,98 @@ async function prepareUploadFile(file) {
   }
 }
 
+function extractionProgress(message) {
+  if (!message?.status) return;
+  const labels = {
+    "loading tesseract core": "Loading OCR Engine",
+    "initializing tesseract": "Starting OCR Engine",
+    "loading language traineddata": "Loading English Model",
+    "initializing api": "Preparing OCR",
+    "recognizing text": "Reading Invoice"
+  };
+  const label = labels[message.status] || "Preparing OCR";
+  const progress = Number.isFinite(message.progress) ? ` ${Math.round(message.progress * 100)}%` : "";
+  setServiceStatus(`${label}${progress}`, "working");
+}
+
+async function getOcrWorker() {
+  if (!window.Tesseract) throw new Error("The OCR engine did not load. Refresh the page and try again.");
+  if (!state.ocrWorkerPromise) {
+    state.ocrWorkerPromise = window.Tesseract.createWorker("eng", 1, {
+      workerPath: "/vendor/tesseract/worker.min.js",
+      corePath: "/vendor/tesseract/core",
+      langPath: "/vendor/tesseract/lang",
+      logger: extractionProgress
+    }).catch(error => {
+      state.ocrWorkerPromise = null;
+      throw error;
+    });
+  }
+  return state.ocrWorkerPromise;
+}
+
+async function recognizeImage(image) {
+  const worker = await getOcrWorker();
+  const result = await worker.recognize(image);
+  return {
+    text: result.data.text || "",
+    confidence: Math.round(result.data.confidence || 0)
+  };
+}
+
+async function extractPdfInBrowser(file) {
+  const pdfjs = await import("/vendor/pdfjs/pdf.min.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
+  const pdfDocument = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  try {
+    const textPages = [];
+    for (let pageNumber = 1; pageNumber <= Math.min(pdfDocument.numPages, 10); pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const content = await page.getTextContent();
+      textPages.push(content.items.map(item => item.str || "").join(" "));
+      page.cleanup();
+    }
+    const embeddedText = textPages.join("\n");
+    if (embeddedText.trim().length >= 30) {
+      return { text: embeddedText, confidence: 80, mode: "browser-pdf-text" };
+    }
+
+    const pageResults = [];
+    for (let pageNumber = 1; pageNumber <= Math.min(pdfDocument.numPages, 3); pageNumber += 1) {
+      setServiceStatus(`Rendering PDF Page ${pageNumber}`, "working");
+      const page = await pdfDocument.getPage(pageNumber);
+      const initialViewport = page.getViewport({ scale: 2 });
+      const scale = Math.min(1, 2400 / Math.max(initialViewport.width, initialViewport.height));
+      const viewport = page.getViewport({ scale: 2 * scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      await page.render({ canvasContext: canvas.getContext("2d", { alpha: false }), viewport }).promise;
+      pageResults.push(await recognizeImage(canvas));
+      page.cleanup();
+    }
+    return {
+      text: pageResults.map(item => item.text).join("\n"),
+      confidence: pageResults.length
+        ? Math.round(pageResults.reduce((sum, item) => sum + item.confidence, 0) / pageResults.length)
+        : 0,
+      mode: "browser-pdf-ocr"
+    };
+  } finally {
+    await pdfDocument.destroy();
+  }
+}
+
+async function extractDocumentInBrowser(file) {
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  if (isPdf) return extractPdfInBrowser(file);
+  const result = await recognizeImage(file);
+  return { ...result, mode: "browser-image-ocr" };
+}
+
 async function uploadForm(formData) {
-  const button = $("#extractDocument");
   setUploadMessage();
-  setServiceStatus("Extracting Invoice…", "working");
-  button.disabled = true;
-  button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Extracting…';
+  setServiceStatus("Saving Review Record…", "working");
   try {
     const invoice = await api("/api/invoices", { method: "POST", body: formData });
     state.invoices.unshift(invoice);
@@ -617,6 +704,30 @@ async function uploadForm(formData) {
     throw error;
   } finally {
     setServiceStatus("Service Ready");
+  }
+}
+
+async function processDocument(file) {
+  const button = $("#extractDocument");
+  setUploadMessage();
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Extracting…';
+  try {
+    setServiceStatus("Preparing Document…", "working");
+    const prepared = await prepareUploadFile(file);
+    const extraction = await extractDocumentInBrowser(prepared);
+    const formData = new FormData();
+    formData.append("document", prepared, prepared.name);
+    formData.append("clientOcr", "true");
+    formData.append("extractedText", extraction.text);
+    formData.append("ocrConfidence", String(extraction.confidence));
+    formData.append("extractionMode", extraction.mode);
+    await uploadForm(formData);
+  } catch (error) {
+    setServiceStatus("Service Ready");
+    setUploadMessage(error.message);
+    throw error;
+  } finally {
     button.disabled = false;
     button.innerHTML = '<i data-lucide="scan-text" aria-hidden="true"></i>Extract Document';
     refreshIcons();
@@ -641,9 +752,8 @@ async function capturePhoto() {
   canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
   canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
   const blob = await imageBlob(canvas, 0.86);
-  const formData = new FormData();
-  formData.append("document", blob, `camera-${Date.now()}.jpg`);
-  await uploadForm(formData);
+  const file = new File([blob], `camera-${Date.now()}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+  await processDocument(file);
 }
 
 async function testTallyConnection() {
@@ -677,14 +787,8 @@ function bindEvents() {
     const file = $("#fileInput").files[0];
     if (!file) return toast("Choose An Invoice Image Or PDF");
     try {
-      setServiceStatus("Preparing Document…", "working");
-      const prepared = await prepareUploadFile(file);
-      const formData = new FormData();
-      formData.append("document", prepared, prepared.name);
-      await uploadForm(formData);
+      await processDocument(file);
     } catch (error) {
-      setServiceStatus("Service Ready");
-      setUploadMessage(error.message);
       toast(error.message);
     }
   });
