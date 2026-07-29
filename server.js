@@ -84,6 +84,9 @@ async function ensureData() {
   await fsp.mkdir(TMP_DIR, { recursive: true });
   await ensureJson(INVOICES_FILE, []);
   await ensureJson(MAPPINGS_FILE, {
+    companyName: "",
+    voucherType: "Purchase",
+    tallyUrl: "http://127.0.0.1:9000",
     defaultPurchaseLedger: "Purchase Accounts",
     defaultTaxLedgers: {
       cgst: "Input CGST",
@@ -493,16 +496,80 @@ function extractInvoiceFields(rawText, ocrConfidence) {
 function validateInvoice(fields, invoices, currentId) {
   const errors = [];
   const warnings = [];
+  const checks = [];
   if (!fields.supplier) errors.push("Supplier is missing.");
   if (!fields.invoiceNumber) errors.push("Invoice number is missing.");
   if (!fields.invoiceDate) warnings.push("Invoice date was not confidently extracted.");
   if (!fields.gstin) warnings.push("Supplier GSTIN was not found.");
   if (!fields.totalAmount) errors.push("Total amount is missing.");
 
+  const requiredFieldsPresent = Boolean(fields.supplier && fields.invoiceNumber && fields.totalAmount);
+  checks.push({
+    id: "required-fields",
+    label: "Required fields",
+    status: requiredFieldsPresent ? "pass" : "fail",
+    detail: requiredFieldsPresent ? "Supplier, invoice number and total are present." : "Complete the missing required fields."
+  });
+
+  const gstin = String(fields.gstin || "").toUpperCase();
+  if (gstin) {
+    const formatValid = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin);
+    const checksumValid = formatValid && validGstinChecksum(gstin);
+    if (!formatValid) warnings.push("GSTIN format appears invalid.");
+    else if (!checksumValid) warnings.push("GSTIN checksum could not be verified.");
+    checks.push({
+      id: "gstin",
+      label: "GSTIN",
+      status: checksumValid ? "pass" : "warn",
+      detail: checksumValid ? "Format and checksum verified." : "Review the GSTIN against the original."
+    });
+  } else {
+    checks.push({ id: "gstin", label: "GSTIN", status: "warn", detail: "GSTIN was not detected." });
+  }
+
   const expected = Math.round(((fields.taxableAmount || 0) + (fields.cgst || 0) + (fields.sgst || 0) + (fields.igst || 0)) * 100) / 100;
-  if (fields.totalAmount && expected && Math.abs(expected - fields.totalAmount) > 1) {
+  const totalsMatch = !fields.totalAmount || !expected || Math.abs(expected - fields.totalAmount) <= 1;
+  if (!totalsMatch) {
     warnings.push(`Total check failed: taxable + taxes is ${expected.toFixed(2)}, total is ${fields.totalAmount.toFixed(2)}.`);
   }
+  checks.push({
+    id: "invoice-total",
+    label: "Invoice total",
+    status: totalsMatch ? "pass" : "warn",
+    detail: totalsMatch ? "Taxable value and taxes reconcile to the total." : `Expected ${expected.toFixed(2)}.`
+  });
+
+  const items = Array.isArray(fields.lineItems) ? fields.lineItems : [];
+  const lineTotal = Math.round(items.reduce((sum, item) => sum + Number(item.amount || 0), 0) * 100) / 100;
+  const linesMatch = !items.length || !fields.taxableAmount || Math.abs(lineTotal - fields.taxableAmount) <= 1;
+  if (!linesMatch) warnings.push(`Line-item check failed: items total ${lineTotal.toFixed(2)}, taxable amount is ${Number(fields.taxableAmount).toFixed(2)}.`);
+  checks.push({
+    id: "line-items",
+    label: "Line items",
+    status: !items.length ? "warn" : linesMatch ? "pass" : "warn",
+    detail: !items.length ? "No line items were detected." : linesMatch ? `${items.length} line item${items.length === 1 ? "" : "s"} reconcile.` : `Items total ${lineTotal.toFixed(2)}.`
+  });
+
+  const hasLocalTax = Number(fields.cgst || 0) > 0 || Number(fields.sgst || 0) > 0;
+  const hasIgst = Number(fields.igst || 0) > 0;
+  const taxModeValid = !(hasLocalTax && hasIgst) && (!hasLocalTax || Math.abs(Number(fields.cgst || 0) - Number(fields.sgst || 0)) <= 1);
+  if (!taxModeValid) warnings.push("Tax-mode check failed: review the CGST, SGST and IGST combination.");
+  checks.push({
+    id: "tax-mode",
+    label: "GST tax mode",
+    status: taxModeValid ? "pass" : "warn",
+    detail: taxModeValid ? (hasIgst ? "IGST treatment detected." : hasLocalTax ? "CGST and SGST treatment detected." : "No GST amount detected.") : "Use either balanced CGST/SGST or IGST."
+  });
+
+  const invoiceDate = fields.invoiceDate ? new Date(`${fields.invoiceDate}T00:00:00Z`) : null;
+  const futureDate = invoiceDate && Number.isFinite(invoiceDate.getTime()) && invoiceDate.getTime() > Date.now() + 86400000;
+  if (futureDate) warnings.push("Invoice date is in the future.");
+  checks.push({
+    id: "invoice-date",
+    label: "Invoice date",
+    status: !fields.invoiceDate || futureDate ? "warn" : "pass",
+    detail: !fields.invoiceDate ? "Date needs review." : futureDate ? "Future date detected." : "Date is present and not in the future."
+  });
 
   const duplicate = invoices.find(invoice => {
     if (invoice.id === currentId) return false;
@@ -513,7 +580,28 @@ function validateInvoice(fields, invoices, currentId) {
     return sameInvoice && sameSupplier;
   });
   if (duplicate) warnings.push(`Possible duplicate of invoice ${duplicate.id}.`);
-  return { errors, warnings, duplicateId: duplicate ? duplicate.id : null };
+  checks.push({
+    id: "duplicate",
+    label: "Duplicate check",
+    status: duplicate ? "warn" : "pass",
+    detail: duplicate ? "A matching supplier and invoice number already exists." : "No exact duplicate found."
+  });
+  return { errors, warnings, checks, duplicateId: duplicate ? duplicate.id : null };
+}
+
+function validGstinChecksum(gstin) {
+  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let factor = 2;
+  let sum = 0;
+  for (let index = gstin.length - 2; index >= 0; index -= 1) {
+    const codePoint = chars.indexOf(gstin[index]);
+    if (codePoint < 0) return false;
+    const product = factor * codePoint;
+    sum += Math.floor(product / 36) + (product % 36);
+    factor = factor === 2 ? 1 : 2;
+  }
+  const checkCodePoint = (36 - (sum % 36)) % 36;
+  return chars[checkCodePoint] === gstin[gstin.length - 1];
 }
 
 function escapeXml(value) {
@@ -547,9 +635,30 @@ function mappingFor(invoice, mappings) {
   };
 }
 
+function processingReportCsv(invoices, mappings) {
+  const headers = [
+    "id", "status", "supplier", "invoiceNumber", "invoiceDate", "gstin",
+    "taxableAmount", "cgst", "sgst", "igst", "totalAmount", "issues",
+    "reviewer", "partyLedger", "createdAt", "updatedAt"
+  ];
+  const rows = invoices.map(invoice => {
+    const fields = invoice.fields || {};
+    const map = mappingFor(invoice, mappings);
+    const issues = (invoice.validation?.errors?.length || 0) + (invoice.validation?.warnings?.length || 0);
+    return [
+      invoice.id, invoice.status, fields.supplier, fields.invoiceNumber, fields.invoiceDate,
+      fields.gstin, fields.taxableAmount, fields.cgst, fields.sgst, fields.igst,
+      fields.totalAmount, issues, invoice.review?.reviewer || "", map.partyLedger,
+      invoice.createdAt, invoice.updatedAt
+    ].map(csvEscape).join(",");
+  });
+  return `${headers.join(",")}\n${rows.join("\n")}\n`;
+}
+
 function createTallyXml(invoice, mappings) {
   const fields = invoice.fields;
   const map = mappingFor(invoice, mappings);
+  const voucherType = mappings.voucherType || "Purchase";
   const taxes = [
     ["cgst", fields.cgst || 0],
     ["sgst", fields.sgst || 0],
@@ -568,12 +677,15 @@ function createTallyXml(invoice, mappings) {
   <HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>
   <BODY>
     <IMPORTDATA>
-      <REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC>
+      <REQUESTDESC>
+        <REPORTNAME>Vouchers</REPORTNAME>
+        ${mappings.companyName ? `<STATICVARIABLES><SVCURRENTCOMPANY>${escapeXml(mappings.companyName)}</SVCURRENTCOMPANY></STATICVARIABLES>` : ""}
+      </REQUESTDESC>
       <REQUESTDATA>
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <VOUCHER VCHTYPE="Purchase" ACTION="Create" OBJVIEW="Invoice Voucher View">
+          <VOUCHER VCHTYPE="${escapeXml(voucherType)}" ACTION="Create" OBJVIEW="Invoice Voucher View">
             <DATE>${escapeXml(tallyDate(fields.invoiceDate))}</DATE>
-            <VOUCHERTYPENAME>Purchase</VOUCHERTYPENAME>
+            <VOUCHERTYPENAME>${escapeXml(voucherType)}</VOUCHERTYPENAME>
             <VOUCHERNUMBER>${escapeXml(fields.invoiceNumber)}</VOUCHERNUMBER>
             <PARTYLEDGERNAME>${escapeXml(map.partyLedger)}</PARTYLEDGERNAME>
             <PERSISTEDVIEW>Invoice Voucher View</PERSISTEDVIEW>
@@ -587,6 +699,15 @@ function createTallyXml(invoice, mappings) {
     </IMPORTDATA>
   </BODY>
 </ENVELOPE>`;
+}
+
+async function readValidatedInvoices() {
+  const invoices = await readJson(INVOICES_FILE, []);
+  for (const invoice of invoices) {
+    invoice.validation = validateInvoice(invoice.fields || {}, invoices, invoice.id);
+  }
+  await writeJson(INVOICES_FILE, invoices);
+  return invoices;
 }
 
 function createCsv(invoice, mappings) {
@@ -675,11 +796,12 @@ function mergeInvoiceFields(existing, incoming) {
   return next;
 }
 
-async function updateInvoice(req, res, id, approve = false) {
+async function updateInvoice(req, res, id, action = "save") {
   const payload = JSON.parse((await readBody(req)).toString("utf8") || "{}");
   const invoices = await readJson(INVOICES_FILE, []);
   const invoice = invoices.find(item => item.id === id);
   if (!invoice) return notFound(res);
+  const previousFields = JSON.stringify(invoice.fields || {});
   invoice.fields = mergeInvoiceFields(invoice, payload.fields || {});
   invoice.review = {
     reviewer: payload.reviewer || invoice.review.reviewer || "",
@@ -688,15 +810,62 @@ async function updateInvoice(req, res, id, approve = false) {
   invoice.updatedAt = nowIso();
   invoice.validation = validateInvoice(invoice.fields, invoices, id);
   audit(invoice, "review_updated", { reviewer: invoice.review.reviewer || "unassigned" });
-  if (approve) {
+
+  if (action === "save" && invoice.status === "approved" && previousFields !== JSON.stringify(invoice.fields)) {
+    invoice.status = "pending_review";
+    delete invoice.approvedAt;
+    audit(invoice, "approval_revoked", { reason: "Approved invoice data was edited and must be reviewed again." });
+  }
+
+  if (action === "approve") {
     if (!invoice.review.reviewer) return json(res, 400, { error: "Reviewer name is required before approval." });
     if (invoice.validation.errors.length) return json(res, 400, { error: "Fix validation errors before approval.", validation: invoice.validation });
+    if (invoice.validation.duplicateId && !invoice.review.notes) {
+      return json(res, 400, { error: "Add a review note explaining why this possible duplicate should be approved." });
+    }
     invoice.status = "approved";
     invoice.approvedAt = nowIso();
     audit(invoice, "approved", { reviewer: invoice.review.reviewer, note: "Approved for export only. No posting was performed." });
   }
+
+  if (action === "needs-correction" || action === "reject") {
+    if (!invoice.review.reviewer) return json(res, 400, { error: "Reviewer name is required for this decision." });
+    if (!invoice.review.notes) return json(res, 400, { error: "Add a review note explaining this decision." });
+    invoice.status = action === "reject" ? "rejected" : "needs_correction";
+    delete invoice.approvedAt;
+    audit(invoice, action === "reject" ? "rejected" : "returned_for_correction", {
+      reviewer: invoice.review.reviewer,
+      note: invoice.review.notes
+    });
+  }
+
   await writeJson(INVOICES_FILE, invoices);
   return json(res, 200, invoice);
+}
+
+async function tallyConnectionStatus(res) {
+  const mappings = await readJson(MAPPINGS_FILE, {});
+  const target = new URL(process.env.TALLY_URL || mappings.tallyUrl || "http://127.0.0.1:9000");
+  if (!["127.0.0.1", "localhost", "::1"].includes(target.hostname)) {
+    return json(res, 400, { connected: false, message: "For this local MVP, the Tally address must point to this computer." });
+  }
+
+  const request = http.get(target, { timeout: 1800 }, response => {
+    response.resume();
+    json(res, 200, {
+      connected: true,
+      address: target.origin,
+      message: `Tally responded with HTTP ${response.statusCode}.`
+    });
+  });
+  request.on("timeout", () => request.destroy(new Error("Connection timed out.")));
+  request.on("error", error => {
+    json(res, 200, {
+      connected: false,
+      address: target.origin,
+      message: `Tally was not detected at ${target.origin}. Start TallyPrime and enable its HTTP server.`
+    });
+  });
 }
 
 async function deleteInvoice(res, id) {
@@ -765,8 +934,18 @@ async function router(req, res) {
     const route = url.pathname;
 
     if (route === "/api/health") return json(res, 200, { ok: true, app: "tally-ocr-mvp" });
-    if (route === "/api/invoices" && req.method === "GET") return json(res, 200, await readJson(INVOICES_FILE, []));
+    if (route === "/api/invoices" && req.method === "GET") return json(res, 200, await readValidatedInvoices());
     if (route === "/api/invoices" && req.method === "POST") return handleUpload(req, res);
+    if (route === "/api/tally/status" && req.method === "GET") return tallyConnectionStatus(res);
+    if (route === "/api/reports/processing.csv" && req.method === "GET") {
+      const invoices = await readJson(INVOICES_FILE, []);
+      const mappings = await readJson(MAPPINGS_FILE, {});
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": 'attachment; filename="invoice-processing-report.csv"'
+      });
+      return res.end(processingReportCsv(invoices, mappings));
+    }
     if (route === "/api/mappings" && req.method === "GET") return json(res, 200, await readJson(MAPPINGS_FILE, {}));
     if (route === "/api/mappings" && req.method === "PUT") {
       const payload = JSON.parse((await readBody(req)).toString("utf8") || "{}");
@@ -777,8 +956,8 @@ async function router(req, res) {
     const invoiceMatch = route.match(/^\/api\/invoices\/([^/]+)(?:\/([^/]+))?$/);
     if (invoiceMatch) {
       const [, id, action] = invoiceMatch;
-      if (req.method === "PUT" && !action) return updateInvoice(req, res, id, false);
-      if (req.method === "POST" && action === "approve") return updateInvoice(req, res, id, true);
+      if (req.method === "PUT" && !action) return updateInvoice(req, res, id, "save");
+      if (req.method === "POST" && ["approve", "needs-correction", "reject"].includes(action)) return updateInvoice(req, res, id, action);
       if (req.method === "DELETE" && !action) return deleteInvoice(res, id);
       if (req.method === "GET" && ["xml", "csv", "json"].includes(action)) return exportInvoice(res, id, action);
       if (req.method === "GET" && action === "original") {

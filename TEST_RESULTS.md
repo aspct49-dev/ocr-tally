@@ -49,3 +49,18 @@ Source: [GST invoice template PDF](https://www.handyinvoice.in/download_pdf?file
 - Browser console: no warnings or errors.
 
 These are deterministic MVP checks, not a production OCR accuracy benchmark. Human review remains mandatory for every document.
+
+## Finance operations demo update
+
+Tested on 29 July 2026 against the updated local app:
+
+- Dashboard metrics: passed with the retained three-invoice sample queue.
+- Extended controls: required fields, GSTIN structure/checksum, invoice total, line-item total, tax mode, invoice date, and duplicate checks rendered correctly.
+- Review states: pending review, needs correction, rejected, and approved states passed.
+- Approval integrity: editing an approved invoice reset it to pending review.
+- Export gate: XML export succeeded while approved and returned HTTP 409 after approval was reset.
+- Processing report: CSV download returned HTTP 200.
+- Tally readiness: local connection test returned a clear not-connected result when Tally was not running and did not transmit invoice data.
+- Desktop layout: no horizontal overflow at 1,440 x 900.
+- Mobile layout: no horizontal overflow at 375 x 812; dashboard cards and review controls remained readable.
+- Browser console: no warnings or errors.

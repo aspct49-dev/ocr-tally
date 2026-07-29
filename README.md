@@ -15,6 +15,18 @@ Relevant assessment citations:
 
 This MVP follows those controls. It does not post to Tally and does not move money. It only exports approved import proposals.
 
+## Demo workspace
+
+The current demo presents the invoice workflow as a finance operations control desk:
+
+- Operational dashboard with invoice value, exception count, approval rate, GST captured, average OCR confidence, duplicate flags, and estimated time saved.
+- Work queue with pending review, correction, rejected, and approved states.
+- Structured control checks for required fields, GSTIN format/checksum, invoice totals, line-item totals, GST tax mode, invoice dates, and duplicates.
+- Human decisions to approve, reject, or return an invoice for correction.
+- Automatic approval reset when approved invoice data is edited.
+- Tally readiness indicators, company and voucher setup, ledger mapping, and a local Tally connection test.
+- Downloadable processing report covering every invoice in the queue.
+
 ## What the MVP extracts
 
 - Supplier
@@ -33,7 +45,9 @@ This MVP follows those controls. It does not post to Tally and does not move mon
 - Checks whether taxable amount + CGST + SGST + IGST matches the total amount.
 - Checks duplicates by supplier/GSTIN plus invoice number.
 - Requires reviewer name before approval.
+- Requires reviewer notes before rejection or return for correction.
 - Blocks export until a human approves the invoice.
+- Resets an approval if approved financial data is subsequently changed.
 - Stores originals in `data/originals`.
 - Stores invoice state, corrections, approvals, and export events in `data/invoices.json`.
 - Stores ledger mappings in `data/mappings.json`.
@@ -67,8 +81,21 @@ Optional environment variables:
 3. Review the extracted data, confidence scores, validation warnings, and original document.
 4. Correct fields and line items as needed.
 5. Enter the reviewer name and notes.
-6. Select **Approve for export**.
-7. Export Tally XML, CSV, or JSON.
+6. Approve, reject, or return the invoice for correction.
+7. Export approved data as Tally XML, CSV, or JSON.
+8. Use **Overview > Download Report** for the queue-level processing report.
+
+## Tally setup
+
+Open **Tally Setup** to configure:
+
+- Tally company name
+- Purchase voucher type
+- Local Tally HTTP address, normally `http://127.0.0.1:9000`
+- Purchase and input-tax ledgers
+- Supplier-specific party and purchase-ledger overrides
+
+The dashboard connection test checks whether the local Tally service responds. It does not send invoice data or create a voucher.
 
 ## Tally XML note
 
@@ -90,4 +117,6 @@ The MVP was tested on desktop and mobile layouts and with two public GST invoice
 - The parser uses deterministic invoice heuristics. For production, train supplier-specific templates or use a managed IDP engine.
 - PDF support extracts embedded text first. Scanned PDFs are rendered to images with `pdftoppm` when available.
 - No purchase-order matching or approval routing integration is included yet.
+- User authentication and role-based segregation of duties are represented by the reviewer workflow but are not production authentication.
+- The GSTIN checksum check is an offline structural check; it does not verify registration status with the GST portal.
 - No autonomous posting, payment, credit, write-off, or ledger mutation is implemented.

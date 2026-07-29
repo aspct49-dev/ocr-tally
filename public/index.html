@@ -3,42 +3,51 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Tally OCR Review</title>
+    <meta name="theme-color" content="#f5f7f9">
+    <title>TallyFlow | Finance Operations</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
+    <a class="skipLink" href="#mainContent">Skip to main content</a>
+
     <header class="topbar">
       <div class="brand">
-        <span class="brandMark" aria-hidden="true">T</span>
+        <span class="brandMark" aria-hidden="true"><i data-lucide="scan-line"></i></span>
         <div>
-          <h1>Tally OCR</h1>
-          <p>Invoice review workspace</p>
+          <h1>TallyFlow</h1>
+          <p>Finance Operations Control Desk</p>
         </div>
       </div>
       <div class="serviceCluster">
-        <span class="guardrail">Review required before export</span>
-        <div class="status" id="serviceStatus"><span class="statusDot"></span>Checking service</div>
+        <span class="guardrail"><i data-lucide="shield-check" aria-hidden="true"></i> Human Approval Required</span>
+        <div class="status" id="serviceStatus" aria-live="polite">
+          <span class="statusDot"></span>Checking Service…
+        </div>
       </div>
     </header>
 
-    <main class="shell">
+    <main id="mainContent" class="shell">
       <aside class="sidebar">
-        <section class="capturePanel">
+        <section class="capturePanel" aria-labelledby="captureTitle">
           <div class="panelHead">
             <div>
-              <p class="eyebrow">New document</p>
-              <h2>Scan a bill</h2>
+              <p class="eyebrow">Document Intake</p>
+              <h2 id="captureTitle">Scan A Bill</h2>
             </div>
+            <span class="secureTag"><i data-lucide="lock-keyhole" aria-hidden="true"></i> Local</span>
           </div>
           <form id="uploadForm">
             <label class="dropzone" for="fileInput">
-              <span class="uploadGlyph" aria-hidden="true">+</span>
-              <strong>Choose image or PDF</strong>
-              <small>Up to 25 MB</small>
-              <input id="fileInput" name="document" type="file" accept="image/*,.pdf">
+              <span class="uploadGlyph" aria-hidden="true"><i data-lucide="file-up"></i></span>
+              <strong>Choose Image Or PDF</strong>
+              <small>PNG, JPG, TIFF, WebP or PDF · up to 25&nbsp;MB</small>
+              <input id="fileInput" name="document" type="file" accept="image/*,.pdf" autocomplete="off">
             </label>
             <div id="fileSelection" class="fileSelection" hidden></div>
-            <button class="primary fullWidth" type="submit">Extract document</button>
+            <button class="primary fullWidth" type="submit">
+              <i data-lucide="scan-text" aria-hidden="true"></i>
+              Extract Document
+            </button>
           </form>
           <div class="camera">
             <div id="videoWrap" class="videoWrap" hidden>
@@ -46,21 +55,29 @@
               <canvas id="captureCanvas" hidden></canvas>
             </div>
             <div class="buttonRow">
-              <button id="startCamera" class="secondary fullWidth" type="button">Use camera</button>
-              <button id="capturePhoto" class="primary fullWidth" type="button" hidden disabled>Capture bill</button>
+              <button id="startCamera" class="secondary fullWidth" type="button">
+                <i data-lucide="camera" aria-hidden="true"></i>
+                Use Camera
+              </button>
+              <button id="capturePhoto" class="primary fullWidth" type="button" hidden disabled>
+                <i data-lucide="aperture" aria-hidden="true"></i>
+                Capture Bill
+              </button>
             </div>
           </div>
         </section>
 
-        <section class="queuePanel">
-          <div class="panelHead">
+        <section class="queuePanel" aria-labelledby="queueTitle">
+          <div class="panelHead compact">
             <div>
-              <p class="eyebrow">Work queue</p>
-              <h2>Invoices <span id="queueCount" class="countBadge">0</span></h2>
+              <p class="eyebrow">Work Queue</p>
+              <h2 id="queueTitle">Invoices <span id="queueCount" class="countBadge">0</span></h2>
             </div>
-            <button id="refreshInvoices" class="iconButton" type="button" title="Refresh invoices" aria-label="Refresh invoices">&#8635;</button>
+            <button id="refreshInvoices" class="iconButton" type="button" title="Refresh invoices" aria-label="Refresh invoices">
+              <i data-lucide="refresh-cw" aria-hidden="true"></i>
+            </button>
           </div>
-          <div class="filters">
+          <div class="filters" role="group" aria-label="Filter invoices">
             <button data-filter="all" class="active" type="button">All <span id="allCount">0</span></button>
             <button data-filter="pending_review" type="button">Review <span id="reviewCount">0</span></button>
             <button data-filter="approved" type="button">Approved <span id="approvedCount">0</span></button>
@@ -70,27 +87,141 @@
       </aside>
 
       <section class="workspace">
-        <nav class="tabs" aria-label="Workspace views">
-          <button class="active" data-tab="review" type="button">Review</button>
-          <button data-tab="mapping" type="button">Ledger mapping</button>
-          <button data-tab="audit" type="button">Audit</button>
+        <nav class="tabs" aria-label="Finance operations views">
+          <button class="active" data-tab="dashboard" type="button"><i data-lucide="layout-dashboard" aria-hidden="true"></i>Overview</button>
+          <button data-tab="review" type="button"><i data-lucide="list-checks" aria-hidden="true"></i>Review Queue</button>
+          <button data-tab="mapping" type="button"><i data-lucide="git-branch" aria-hidden="true"></i>Tally Setup</button>
+          <button data-tab="audit" type="button"><i data-lucide="history" aria-hidden="true"></i>Audit</button>
         </nav>
 
-        <section id="reviewTab" class="tabView active">
+        <section id="dashboardTab" class="tabView active">
+          <header class="pageHeader">
+            <div>
+              <p class="eyebrow">Operational Overview</p>
+              <h2>Invoice Processing</h2>
+              <p>Review exceptions, control approvals and prepare verified vouchers for Tally.</p>
+            </div>
+            <a class="secondary buttonLink" href="/api/reports/processing.csv">
+              <i data-lucide="download" aria-hidden="true"></i>
+              Download Report
+            </a>
+          </header>
+
+          <section class="kpiGrid" aria-label="Invoice processing metrics">
+            <article class="metricCard">
+              <div class="metricHead"><span>Total Value</span><i data-lucide="indian-rupee" aria-hidden="true"></i></div>
+              <strong id="metricValue">₹0.00</strong>
+              <small id="metricValueNote">Across 0 invoices</small>
+            </article>
+            <article class="metricCard">
+              <div class="metricHead"><span>Needs Attention</span><i data-lucide="circle-alert" aria-hidden="true"></i></div>
+              <strong id="metricExceptions">0</strong>
+              <small id="metricExceptionsNote">No open exceptions</small>
+            </article>
+            <article class="metricCard">
+              <div class="metricHead"><span>Approved</span><i data-lucide="badge-check" aria-hidden="true"></i></div>
+              <strong id="metricApproved">0%</strong>
+              <small id="metricApprovedNote">0 of 0 invoices</small>
+            </article>
+            <article class="metricCard">
+              <div class="metricHead"><span>Estimated Time Saved</span><i data-lucide="clock-3" aria-hidden="true"></i></div>
+              <strong id="metricTime">0 min</strong>
+              <small>Estimate at 8 minutes per invoice</small>
+            </article>
+          </section>
+
+          <section class="dashboardGrid">
+            <section class="panel processPanel" aria-labelledby="processTitle">
+              <div class="panelHead">
+                <div>
+                  <p class="eyebrow">Pipeline Health</p>
+                  <h3 id="processTitle">Processing Status</h3>
+                </div>
+                <span id="averageConfidence" class="quietBadge">0% Avg. Confidence</span>
+              </div>
+              <div class="processBar" role="img" aria-label="Invoice status distribution">
+                <span id="barApproved" class="barApproved"></span>
+                <span id="barReview" class="barReview"></span>
+                <span id="barCorrection" class="barCorrection"></span>
+                <span id="barRejected" class="barRejected"></span>
+              </div>
+              <div class="legend">
+                <span><i class="legendDot approved"></i>Approved <strong id="legendApproved">0</strong></span>
+                <span><i class="legendDot review"></i>Review <strong id="legendReview">0</strong></span>
+                <span><i class="legendDot correction"></i>Correction <strong id="legendCorrection">0</strong></span>
+                <span><i class="legendDot rejected"></i>Rejected <strong id="legendRejected">0</strong></span>
+              </div>
+              <div class="taxSummary">
+                <div>
+                  <span>Taxable Value</span>
+                  <strong id="taxableSummary">₹0.00</strong>
+                </div>
+                <div>
+                  <span>GST Captured</span>
+                  <strong id="gstSummary">₹0.00</strong>
+                </div>
+                <div>
+                  <span>Duplicate Flags</span>
+                  <strong id="duplicateSummary">0</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel tallyPanel" aria-labelledby="tallyTitle">
+              <div class="panelHead">
+                <div>
+                  <p class="eyebrow">Tally Readiness</p>
+                  <h3 id="tallyTitle">Export Control</h3>
+                </div>
+                <span id="tallyReadinessBadge" class="quietBadge">Setup Required</span>
+              </div>
+              <div class="readinessList">
+                <div><span><i data-lucide="building-2" aria-hidden="true"></i>Company Configured</span><strong id="readyCompany">No</strong></div>
+                <div><span><i data-lucide="book-open-check" aria-hidden="true"></i>Ledger Mapping</span><strong id="readyLedgers">Incomplete</strong></div>
+                <div><span><i data-lucide="shield-check" aria-hidden="true"></i>Approved Vouchers</span><strong id="readyApproved">0</strong></div>
+              </div>
+              <button id="testTallyConnection" class="secondary fullWidth" type="button">
+                <i data-lucide="plug-zap" aria-hidden="true"></i>
+                Test Tally Connection
+              </button>
+              <p id="tallyConnectionMessage" class="connectionMessage" aria-live="polite">No financial data is posted by this test.</p>
+            </section>
+          </section>
+
+          <section class="panel recentPanel" aria-labelledby="recentTitle">
+            <div class="panelHead">
+              <div>
+                <p class="eyebrow">Recent Activity</p>
+                <h3 id="recentTitle">Latest Invoices</h3>
+              </div>
+              <button class="textButton" data-go-tab="review" type="button">Open Review Queue <i data-lucide="arrow-right" aria-hidden="true"></i></button>
+            </div>
+            <div class="tableWrap">
+              <table>
+                <thead>
+                  <tr><th>Supplier</th><th>Invoice</th><th>Date</th><th>Validation</th><th>Status</th><th class="numeric">Amount</th></tr>
+                </thead>
+                <tbody id="recentInvoices"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="reviewTab" class="tabView">
           <div id="emptyState" class="emptyState">
-            <div class="emptyGlyph" aria-hidden="true">+</div>
-            <h2>Add your first invoice</h2>
-            <p>Upload a bill or use the camera to begin review.</p>
+            <div class="emptyGlyph" aria-hidden="true"><i data-lucide="inbox"></i></div>
+            <h2>Select An Invoice</h2>
+            <p>Choose an invoice from the work queue or add a new document.</p>
           </div>
 
           <div id="reviewPane" class="reviewGrid" hidden>
             <section class="documentPane">
               <div class="panelHead">
                 <div>
-                  <p class="eyebrow">Source document</p>
+                  <p class="eyebrow">Source Document</p>
                   <h2>Original</h2>
                 </div>
-                <a id="originalLink" class="textLink" target="_blank" rel="noreferrer">Open file</a>
+                <a id="originalLink" class="textLink" target="_blank" rel="noreferrer">Open File <i data-lucide="external-link" aria-hidden="true"></i></a>
               </div>
               <iframe id="originalFrame" title="Original invoice"></iframe>
             </section>
@@ -98,80 +229,90 @@
             <section class="reviewPanel">
               <div class="panelHead">
                 <div>
-                  <p class="eyebrow">Human review</p>
-                  <h2>Invoice details</h2>
+                  <p class="eyebrow">Human Review</p>
+                  <h2>Invoice Details</h2>
                   <p id="invoiceMeta"></p>
                 </div>
                 <span id="statusPill" class="pill"></span>
               </div>
 
-              <div id="validationBox" class="validationBox"></div>
+              <section class="controlSummary" aria-labelledby="controlSummaryTitle">
+                <div class="panelHead compact">
+                  <h3 id="controlSummaryTitle">Control Checks</h3>
+                  <span id="controlScore" class="quietBadge"></span>
+                </div>
+                <div id="controlChecks" class="controlChecks"></div>
+              </section>
+
+              <div id="validationBox" class="validationBox" aria-live="polite"></div>
 
               <form id="reviewForm" class="fieldGrid">
                 <label>Supplier
                   <input name="supplier" autocomplete="off">
                   <small data-confidence="supplier"></small>
                 </label>
-                <label>Invoice number
-                  <input name="invoiceNumber" autocomplete="off">
+                <label>Invoice Number
+                  <input name="invoiceNumber" autocomplete="off" spellcheck="false">
                   <small data-confidence="invoiceNumber"></small>
                 </label>
-                <label>Invoice date
-                  <input name="invoiceDate" type="date">
+                <label>Invoice Date
+                  <input name="invoiceDate" type="date" autocomplete="off">
                   <small data-confidence="invoiceDate"></small>
                 </label>
                 <label>GSTIN
-                  <input name="gstin" autocomplete="off">
+                  <input name="gstin" autocomplete="off" spellcheck="false">
                   <small data-confidence="gstin"></small>
                 </label>
-                <label>Taxable amount
-                  <input name="taxableAmount" type="number" step="0.01">
+                <label>Taxable Amount
+                  <input name="taxableAmount" type="number" inputmode="decimal" step="0.01" autocomplete="off">
                   <small data-confidence="taxableAmount"></small>
                 </label>
                 <label>CGST
-                  <input name="cgst" type="number" step="0.01">
+                  <input name="cgst" type="number" inputmode="decimal" step="0.01" autocomplete="off">
                   <small data-confidence="cgst"></small>
                 </label>
                 <label>SGST
-                  <input name="sgst" type="number" step="0.01">
+                  <input name="sgst" type="number" inputmode="decimal" step="0.01" autocomplete="off">
                   <small data-confidence="sgst"></small>
                 </label>
                 <label>IGST
-                  <input name="igst" type="number" step="0.01">
+                  <input name="igst" type="number" inputmode="decimal" step="0.01" autocomplete="off">
                   <small data-confidence="igst"></small>
                 </label>
-                <label>Total amount
-                  <input name="totalAmount" type="number" step="0.01">
+                <label>Total Amount
+                  <input name="totalAmount" type="number" inputmode="decimal" step="0.01" autocomplete="off">
                   <small data-confidence="totalAmount"></small>
                 </label>
                 <label>Reviewer
-                  <input name="reviewer" autocomplete="name" placeholder="Finance reviewer">
+                  <input name="reviewer" autocomplete="name" placeholder="Finance reviewer…">
                 </label>
-                <label class="wide">Review notes
-                  <textarea name="notes" rows="3" placeholder="Correction reason or approval notes"></textarea>
+                <label class="wide">Review Notes
+                  <textarea name="notes" rows="3" placeholder="Explain corrections, exceptions or approval decisions…"></textarea>
                 </label>
               </form>
 
               <section class="subsection">
                 <div class="panelHead compact">
-                  <h3>Line items</h3>
-                  <button id="addLineItem" class="secondary" type="button">+ Add line</button>
+                  <h3>Line Items</h3>
+                  <button id="addLineItem" class="secondary compactButton" type="button"><i data-lucide="plus" aria-hidden="true"></i>Add Line</button>
                 </div>
                 <div id="lineItems" class="lineItems"></div>
               </section>
 
               <section class="subsection rawSection">
                 <div class="panelHead compact">
-                  <h3>Raw OCR text</h3>
-                  <button id="toggleRaw" class="secondary" type="button">Show</button>
+                  <h3>Raw OCR Text</h3>
+                  <button id="toggleRaw" class="secondary compactButton" type="button">Show</button>
                 </div>
                 <pre id="rawText" class="rawText" hidden></pre>
               </section>
 
               <div class="actions">
                 <div class="actionGroup">
-                  <button id="saveReview" class="secondary" type="button">Save review</button>
-                  <button id="approveInvoice" class="primary" type="button">Approve for export</button>
+                  <button id="saveReview" class="secondary" type="button"><i data-lucide="save" aria-hidden="true"></i>Save</button>
+                  <button id="returnInvoice" class="warningButton" type="button"><i data-lucide="undo-2" aria-hidden="true"></i>Return</button>
+                  <button id="rejectInvoice" class="dangerButton" type="button"><i data-lucide="x" aria-hidden="true"></i>Reject</button>
+                  <button id="approveInvoice" class="primary" type="button"><i data-lucide="check" aria-hidden="true"></i>Approve</button>
                 </div>
                 <div class="exportGroup" aria-label="Export approved invoice">
                   <span>Export</span>
@@ -185,45 +326,74 @@
         </section>
 
         <section id="mappingTab" class="tabView">
-          <section class="panel settingsPanel">
-            <div class="panelHead">
-              <div>
-                <p class="eyebrow">Export settings</p>
-                <h2>Ledger and party mapping</h2>
-                <p>Set the Tally ledger names used in approved exports.</p>
-              </div>
-              <button id="saveMappings" class="primary" type="button">Save mappings</button>
+          <header class="pageHeader">
+            <div>
+              <p class="eyebrow">Configuration</p>
+              <h2>Tally Setup</h2>
+              <p>Configure the company, voucher and ledger names used in approved exports.</p>
             </div>
-            <div class="fieldGrid settingsGrid">
-              <label>Default purchase ledger
-                <input id="defaultPurchaseLedger">
-              </label>
-              <label>Default CGST ledger
-                <input id="defaultCgstLedger">
-              </label>
-              <label>Default SGST ledger
-                <input id="defaultSgstLedger">
-              </label>
-              <label>Default IGST ledger
-                <input id="defaultIgstLedger">
-              </label>
+            <button id="saveMappings" class="primary" type="button"><i data-lucide="save" aria-hidden="true"></i>Save Setup</button>
+          </header>
+          <section class="panel settingsPanel">
+            <div class="settingsSection">
+              <div>
+                <p class="eyebrow">Connection</p>
+                <h3>Company & Tally</h3>
+                <p>Connection testing reads service availability only. It does not create vouchers.</p>
+              </div>
+              <div class="fieldGrid settingsGrid">
+                <label>Company Name
+                  <input id="companyName" autocomplete="organization" placeholder="DB Engineering India…">
+                </label>
+                <label>Voucher Type
+                  <input id="voucherType" autocomplete="off" placeholder="Purchase…">
+                </label>
+                <label class="wide">Local Tally Address
+                  <input id="tallyUrl" type="url" autocomplete="url" spellcheck="false" value="http://127.0.0.1:9000">
+                </label>
+              </div>
+            </div>
+            <div class="settingsSection">
+              <div>
+                <p class="eyebrow">Defaults</p>
+                <h3>Ledger Mapping</h3>
+                <p>Use ledger names that already exist in the selected Tally company.</p>
+              </div>
+              <div class="fieldGrid settingsGrid">
+                <label>Default Purchase Ledger
+                  <input id="defaultPurchaseLedger" autocomplete="off">
+                </label>
+                <label>Default CGST Ledger
+                  <input id="defaultCgstLedger" autocomplete="off">
+                </label>
+                <label>Default SGST Ledger
+                  <input id="defaultSgstLedger" autocomplete="off">
+                </label>
+                <label>Default IGST Ledger
+                  <input id="defaultIgstLedger" autocomplete="off">
+                </label>
+              </div>
             </div>
             <div class="panelHead compact sectionDivider">
-              <h3>Supplier-specific mappings</h3>
-              <button id="addMapping" class="secondary" type="button">+ Add mapping</button>
+              <div>
+                <p class="eyebrow">Overrides</p>
+                <h3>Supplier-Specific Mappings</h3>
+              </div>
+              <button id="addMapping" class="secondary" type="button"><i data-lucide="plus" aria-hidden="true"></i>Add Mapping</button>
             </div>
             <div id="supplierMappings" class="mappingRows"></div>
           </section>
         </section>
 
         <section id="auditTab" class="tabView">
-          <section class="panel settingsPanel">
-            <div class="panelHead">
-              <div>
-                <p class="eyebrow">Traceability</p>
-                <h2>Audit trail</h2>
-              </div>
+          <header class="pageHeader">
+            <div>
+              <p class="eyebrow">Traceability</p>
+              <h2>Audit Trail</h2>
+              <p>Every extraction, correction, decision and export remains visible.</p>
             </div>
+          </header>
+          <section class="panel settingsPanel">
             <div id="auditTrail" class="auditTrail"></div>
           </section>
         </section>
@@ -231,6 +401,7 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/vendor/lucide.min.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>
