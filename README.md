@@ -70,9 +70,21 @@ http://localhost:4173
 Optional environment variables:
 
 - `PORT`: change the local port. Example: `$env:PORT=4180`
+- `DATA_DIR`: store invoices in a custom writable directory.
 - `PYTHON`: path to Python with `pdfplumber` installed for text PDFs.
 - `PDFTOPPM`: path to `pdftoppm` for OCR of scanned PDFs.
 - `NODE_MODULES_DIR`: folder containing `tesseract.js`.
+
+## Vercel deployment
+
+The included `vercel.json` routes the website and API through a Node.js
+function. Vercel's application bundle is read-only, so the app automatically
+uses `/tmp/tally-ocr-mvp` for uploaded originals, mappings, invoices, and audit
+records.
+
+Vercel temporary storage is suitable for a demonstration only. Records can be
+lost when a function instance is replaced or restarted. Use persistent object
+storage and a database before using the hosted app for real accounting work.
 
 ## Use
 

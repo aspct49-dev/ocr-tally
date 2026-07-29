@@ -9,7 +9,12 @@ const Module = require("module");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
-const DATA_DIR = path.join(ROOT, "data");
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : IS_SERVERLESS
+    ? path.join(os.tmpdir(), "tally-ocr-mvp")
+    : path.join(ROOT, "data");
 const ORIGINALS_DIR = path.join(DATA_DIR, "originals");
 const TMP_DIR = path.join(DATA_DIR, "tmp");
 const INVOICES_FILE = path.join(DATA_DIR, "invoices.json");
@@ -978,7 +983,11 @@ async function router(req, res) {
   }
 }
 
-http.createServer(router).listen(PORT, () => {
-  console.log(`Tally OCR MVP running at http://localhost:${PORT}`);
-  console.log("No data is posted to Tally automatically. Approved invoices are export proposals only.");
-});
+if (require.main === module) {
+  http.createServer(router).listen(PORT, () => {
+    console.log(`Tally OCR MVP running at http://localhost:${PORT}`);
+    console.log("No data is posted to Tally automatically. Approved invoices are export proposals only.");
+  });
+}
+
+module.exports = router;
