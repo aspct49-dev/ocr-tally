@@ -3,6 +3,7 @@ const state = {
   selectedId: null,
   filter: "all",
   mappings: null,
+  aiExtraction: { available: false, model: "" },
   stream: null,
   ocrWorkerPromise: null,
   activeTab: new URLSearchParams(window.location.search).get("view") || "dashboard"
@@ -98,6 +99,27 @@ function setServiceStatus(message, stateName = "ready") {
   node.dataset.state = stateName;
 }
 
+function setExtractButtonLabel(working = false) {
+  const button = $("#extractDocument");
+  if (!button) return;
+  if (working) {
+    button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Scanning...';
+    return;
+  }
+  const label = state.aiExtraction.available ? "Scan with AI" : "Extract Document";
+  const icon = state.aiExtraction.available ? "sparkles" : "scan-text";
+  button.innerHTML = `<i data-lucide="${icon}" aria-hidden="true"></i>${label}`;
+  refreshIcons();
+}
+
+function extractionStateLabel(value) {
+  return {
+    high_confidence: "High Confidence",
+    review_required: "Review Required",
+    missing_unreadable: "Missing/Unreadable"
+  }[value] || "Review Required";
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, char => ({
     "&": "&amp;",
@@ -140,8 +162,13 @@ async function loadAll() {
     api("/api/mappings")
   ]);
   setServiceStatus(health.ok ? "Local Service Ready" : "Service Unavailable", health.ok ? "ready" : "error");
+  state.aiExtraction = {
+    available: Boolean(health.features?.aiExtraction),
+    model: health.features?.aiModel || ""
+  };
   state.invoices = invoices;
   state.mappings = mappings;
+  setExtractButtonLabel();
 
   const requestedId = new URLSearchParams(window.location.search).get("invoice");
   if (requestedId && invoices.some(invoice => invoice.id === requestedId)) state.selectedId = requestedId;
@@ -185,7 +212,7 @@ function renderInvoices() {
       <strong>${escapeHtml(fields.supplier || "Unknown Supplier")}</strong>
       <span class="invoiceNumber">${escapeHtml(fields.invoiceNumber || "No Invoice Number")}</span>
       <span class="invoiceAmount">${money(fields.totalAmount)}</span>
-      <span class="invoiceMetaLine">${issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : "Checks Passed"}</span>
+      <span class="invoiceMetaLine">${escapeHtml(extractionStateLabel(invoice.extractionState))} · ${issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : "Checks Passed"}</span>
       <span class="queueStatus ${status}"><i data-lucide="${issueCount ? "circle-alert" : "circle-check"}" aria-hidden="true"></i>${statusLabel(invoice.status)}</span>
     `;
     card.addEventListener("click", () => {
@@ -401,7 +428,8 @@ function renderReview() {
   setInput("reviewer", invoice.review?.reviewer);
   setInput("notes", invoice.review?.notes);
 
-  $("#invoiceMeta").textContent = `${invoice.originalName} · ${invoice.extractionMode} · OCR ${invoice.confidence?.ocrOverall ?? 0}%`;
+  const aiScore = invoice.confidence?.aiOverall ? ` · AI ${invoice.confidence.aiOverall}%` : "";
+  $("#invoiceMeta").textContent = `${invoice.originalName} · ${invoice.extractionMode} · ${extractionStateLabel(invoice.extractionState)} · OCR ${invoice.confidence?.ocrOverall ?? 0}%${aiScore}`;
   const pill = $("#statusPill");
   pill.textContent = statusLabel(invoice.status);
   pill.className = `pill ${statusClass(invoice.status)}`;
@@ -687,7 +715,7 @@ async function extractDocumentInBrowser(file) {
 
 async function uploadForm(formData) {
   setUploadMessage();
-  setServiceStatus("Saving Review Record…", "working");
+  setServiceStatus(state.aiExtraction.available ? "Running AI Cross-Check..." : "Saving Review Record...", "working");
   try {
     const invoice = await api("/api/invoices", { method: "POST", body: formData });
     state.invoices.unshift(invoice);
@@ -698,7 +726,7 @@ async function uploadForm(formData) {
     $("#fileInput").value = "";
     $("#fileSelection").hidden = true;
     switchTab("review");
-    toast("OCR Extraction Complete");
+    toast(invoice.aiExtraction?.attempted && !invoice.aiExtraction?.error ? "AI Scan Ready For Review" : "OCR Extraction Complete");
   } catch (error) {
     setUploadMessage(error.message);
     throw error;
@@ -711,7 +739,7 @@ async function processDocument(file) {
   const button = $("#extractDocument");
   setUploadMessage();
   button.disabled = true;
-  button.innerHTML = '<span class="spinner" aria-hidden="true"></span>Extracting…';
+  setExtractButtonLabel(true);
   try {
     setServiceStatus("Preparing Document…", "working");
     const prepared = await prepareUploadFile(file);
@@ -722,6 +750,7 @@ async function processDocument(file) {
     formData.append("extractedText", extraction.text);
     formData.append("ocrConfidence", String(extraction.confidence));
     formData.append("extractionMode", extraction.mode);
+    formData.append("preferAi", state.aiExtraction.available ? "true" : "false");
     await uploadForm(formData);
   } catch (error) {
     setServiceStatus("Service Ready");
@@ -729,8 +758,7 @@ async function processDocument(file) {
     throw error;
   } finally {
     button.disabled = false;
-    button.innerHTML = '<i data-lucide="scan-text" aria-hidden="true"></i>Extract Document';
-    refreshIcons();
+    setExtractButtonLabel();
   }
 }
 

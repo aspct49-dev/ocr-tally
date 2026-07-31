@@ -50,6 +50,18 @@ Source: [GST invoice template PDF](https://www.handyinvoice.in/download_pdf?file
 
 These are deterministic MVP checks, not a production OCR accuracy benchmark. Human review remains mandatory for every document.
 
+## Hybrid AI extraction update
+
+Tested on 31 July 2026 with the local fixture in `test/sample-ai-invoice.json`, based on the referenced uploaded sample bill values:
+
+- Strict OpenAI invoice schema shape: passed.
+- AI-to-review-field normalization: passed for supplier, invoice number, invoice date, GSTIN, taxable value, CGST, SGST, IGST, total, and line items.
+- Mathematical validation: passed for taxable amount + CGST + SGST + IGST = total.
+- Line-item validation: passed for line-item taxable totals matching invoice taxable value.
+- GSTIN control: passed by flagging the fake sample GSTIN checksum for review.
+- AI/OCR cross-check: passed by flagging deliberate invoice number and total mismatches as review-required.
+- OpenAI network call: not run in automated tests; tests do not require or expose an API key.
+
 ## Finance operations demo update
 
 Tested on 29 July 2026 against the updated local app:

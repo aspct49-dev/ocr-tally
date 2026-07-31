@@ -21,6 +21,78 @@ const INVOICES_FILE = path.join(DATA_DIR, "invoices.json");
 const MAPPINGS_FILE = path.join(DATA_DIR, "mappings.json");
 const PORT = Number(process.env.PORT || 4173);
 const MAX_UPLOAD_BYTES = IS_SERVERLESS ? Math.floor(4.25 * 1024 * 1024) : 25 * 1024 * 1024;
+const OPENAI_API_URL = process.env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
+const OPENAI_INVOICE_MODEL = process.env.OPENAI_INVOICE_MODEL || "gpt-5.6-terra";
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 45000);
+
+const INVOICE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "supplier", "customer", "invoice_number", "invoice_date", "due_date", "place_of_supply",
+    "line_items", "subtotal", "discount", "taxable_amount", "cgst", "sgst", "igst",
+    "total", "early_pay_amount", "currency", "unreadable_fields", "notes"
+  ],
+  properties: {
+    supplier: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "gstin", "pan", "address"],
+      properties: {
+        name: { type: ["string", "null"] },
+        gstin: { type: ["string", "null"] },
+        pan: { type: ["string", "null"] },
+        address: { type: ["string", "null"] }
+      }
+    },
+    customer: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "gstin", "pan", "address"],
+      properties: {
+        name: { type: ["string", "null"] },
+        gstin: { type: ["string", "null"] },
+        pan: { type: ["string", "null"] },
+        address: { type: ["string", "null"] }
+      }
+    },
+    invoice_number: { type: ["string", "null"] },
+    invoice_date: { type: ["string", "null"], description: "Invoice date as YYYY-MM-DD, or null if unreadable." },
+    due_date: { type: ["string", "null"], description: "Due date as YYYY-MM-DD, or null if unreadable." },
+    place_of_supply: { type: ["string", "null"] },
+    line_items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["description", "hsn", "quantity", "rate", "gst_rate", "taxable_amount", "cgst", "sgst", "igst", "amount"],
+        properties: {
+          description: { type: ["string", "null"] },
+          hsn: { type: ["string", "null"] },
+          quantity: { type: ["number", "null"] },
+          rate: { type: ["number", "null"] },
+          gst_rate: { type: ["number", "null"] },
+          taxable_amount: { type: ["number", "null"] },
+          cgst: { type: ["number", "null"] },
+          sgst: { type: ["number", "null"] },
+          igst: { type: ["number", "null"] },
+          amount: { type: ["number", "null"] }
+        }
+      }
+    },
+    subtotal: { type: ["number", "null"] },
+    discount: { type: ["number", "null"] },
+    taxable_amount: { type: ["number", "null"] },
+    cgst: { type: ["number", "null"] },
+    sgst: { type: ["number", "null"] },
+    igst: { type: ["number", "null"] },
+    total: { type: ["number", "null"] },
+    early_pay_amount: { type: ["number", "null"] },
+    currency: { type: ["string", "null"] },
+    unreadable_fields: { type: "array", items: { type: "string" } },
+    notes: { type: ["string", "null"] }
+  }
+};
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -33,6 +105,9 @@ const MIME = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
   ".pdf": "application/pdf"
 };
 
@@ -609,6 +684,361 @@ function extractInvoiceFields(rawText, ocrConfidence) {
   return { fields, confidence, rawText: textValue };
 }
 
+function openAiConfigured() {
+  return Boolean(process.env.OPENAI_API_KEY);
+}
+
+function responseOutputText(payload) {
+  if (typeof payload.output_text === "string") return payload.output_text;
+  const chunks = [];
+  for (const item of payload.output || []) {
+    for (const content of item.content || []) {
+      if (typeof content.text === "string") chunks.push(content.text);
+    }
+  }
+  return chunks.join("\n");
+}
+
+function documentContentForOpenAI(upload) {
+  const mimeType = upload.contentType || MIME[extensionForUpload(upload)] || "application/octet-stream";
+  const dataUrl = `data:${mimeType};base64,${upload.buffer.toString("base64")}`;
+  if (mimeType === "application/pdf" || /\.pdf$/i.test(upload.filename || "")) {
+    return {
+      type: "input_file",
+      filename: upload.filename || "invoice.pdf",
+      file_data: dataUrl
+    };
+  }
+  return {
+    type: "input_image",
+    image_url: dataUrl,
+    detail: "high"
+  };
+}
+
+async function extractInvoiceWithOpenAI(upload, ocrText = "") {
+  if (!openAiConfigured()) {
+    const error = new Error("OPENAI_API_KEY is not configured; OCR fallback was used.");
+    error.code = "OPENAI_NOT_CONFIGURED";
+    throw error;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  try {
+    const response = await fetch(OPENAI_API_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model: OPENAI_INVOICE_MODEL,
+        input: [{
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Extract this Indian GST invoice or bill for finance review.",
+                "Do not guess unreadable values; return null and list the field in unreadable_fields.",
+                "Separate supplier and customer details. Extract every visible line item.",
+                "Use YYYY-MM-DD dates and plain numeric amounts without currency symbols.",
+                "If OCR text is supplied, use it only as supporting evidence and prefer the document image/PDF layout.",
+                ocrText ? `Supporting OCR text:\n${ocrText.slice(0, 12000)}` : ""
+              ].filter(Boolean).join("\n\n")
+            },
+            documentContentForOpenAI(upload)
+          ]
+        }],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "gst_invoice",
+            strict: true,
+            schema: INVOICE_SCHEMA
+          }
+        }
+      }),
+      signal: controller.signal
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload.error?.message || `OpenAI extraction failed with HTTP ${response.status}.`;
+      const error = new Error(message);
+      error.statusCode = response.status >= 500 ? 502 : 422;
+      throw error;
+    }
+
+    const output = responseOutputText(payload);
+    if (!output) throw new Error("OpenAI extraction returned no structured invoice data.");
+    return {
+      invoice: JSON.parse(output),
+      model: payload.model || OPENAI_INVOICE_MODEL,
+      responseId: payload.id || null
+    };
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("OpenAI extraction timed out; OCR fallback was used.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function cleanString(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function cleanDate(value) {
+  const raw = cleanString(value);
+  if (!raw) return "";
+  const parsed = parseDate(raw);
+  return /^\d{4}-\d{2}-\d{2}$/.test(parsed) ? parsed : raw;
+}
+
+function cleanAmount(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const n = amountToNumber(value);
+  return n === null ? 0 : n;
+}
+
+function normalizeGstin(value) {
+  return cleanString(value).toUpperCase().replace(/[^0-9A-Z]/g, "");
+}
+
+function aiFieldConfidence(value, presentScore = 88) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number" && !Number.isFinite(value)) return 0;
+  return presentScore;
+}
+
+function aiToParsedFields(aiInvoice, ocrConfidence) {
+  const items = Array.isArray(aiInvoice.line_items) ? aiInvoice.line_items : [];
+  const lineItems = items.map(item => {
+    const quantity = item.quantity === null || item.quantity === undefined ? 0 : Number(item.quantity);
+    const rate = cleanAmount(item.rate);
+    const taxableAmount = cleanAmount(item.taxable_amount);
+    const amount = taxableAmount || (quantity && rate ? Math.round(quantity * rate * 100) / 100 : cleanAmount(item.amount));
+    return {
+      description: cleanString(item.description || item.hsn || "Line item"),
+      quantity: Number.isFinite(quantity) ? quantity : 0,
+      rate,
+      amount,
+      hsn: cleanString(item.hsn),
+      gstRate: item.gst_rate === null || item.gst_rate === undefined ? null : Number(item.gst_rate),
+      confidence: aiFieldConfidence(item.description || amount, 86)
+    };
+  }).filter(item => item.description || item.amount);
+
+  const supplier = cleanString(aiInvoice.supplier?.name);
+  const invoiceNumber = cleanString(aiInvoice.invoice_number);
+  const invoiceDate = cleanDate(aiInvoice.invoice_date);
+  const gstin = normalizeGstin(aiInvoice.supplier?.gstin);
+  const taxableAmount = cleanAmount(aiInvoice.taxable_amount);
+  const cgst = cleanAmount(aiInvoice.cgst);
+  const sgst = cleanAmount(aiInvoice.sgst);
+  const igst = cleanAmount(aiInvoice.igst);
+  const totalAmount = cleanAmount(aiInvoice.total);
+
+  const fields = {
+    supplier,
+    invoiceNumber,
+    invoiceDate,
+    gstin,
+    taxableAmount,
+    cgst,
+    sgst,
+    igst,
+    totalAmount,
+    lineItems
+  };
+  const confidence = {
+    supplier: aiFieldConfidence(supplier),
+    invoiceNumber: aiFieldConfidence(invoiceNumber, 92),
+    invoiceDate: aiFieldConfidence(invoiceDate, 90),
+    gstin: aiFieldConfidence(gstin, 94),
+    taxableAmount: aiFieldConfidence(aiInvoice.taxable_amount),
+    cgst: aiFieldConfidence(aiInvoice.cgst, aiInvoice.cgst ? 88 : 70),
+    sgst: aiFieldConfidence(aiInvoice.sgst, aiInvoice.sgst ? 88 : 70),
+    igst: aiFieldConfidence(aiInvoice.igst, aiInvoice.igst ? 88 : 70),
+    totalAmount: aiFieldConfidence(aiInvoice.total, 92),
+    lineItems: lineItems.length ? 86 : 25,
+    ocrOverall: ocrConfidence,
+    aiOverall: 88
+  };
+  return { fields, confidence, rawAi: aiInvoice };
+}
+
+function valuePresent(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim() !== "";
+  if (typeof value === "number") return Number.isFinite(value);
+  return true;
+}
+
+function preferFields(primary, secondary) {
+  const next = {};
+  for (const key of ["supplier", "invoiceNumber", "invoiceDate", "gstin", "taxableAmount", "cgst", "sgst", "igst", "totalAmount"]) {
+    next[key] = valuePresent(primary.fields[key]) ? primary.fields[key] : secondary.fields[key];
+  }
+  next.lineItems = valuePresent(primary.fields.lineItems) ? primary.fields.lineItems : secondary.fields.lineItems || [];
+  return next;
+}
+
+function canonicalValue(value) {
+  return cleanString(value).toLowerCase().replace(/\s+/g, " ");
+}
+
+function compareExtractionFields(aiFields, ocrFields) {
+  const disagreements = [];
+  for (const key of ["invoiceNumber", "invoiceDate", "gstin"]) {
+    if (!valuePresent(aiFields[key]) || !valuePresent(ocrFields[key])) continue;
+    if (canonicalValue(aiFields[key]) !== canonicalValue(ocrFields[key])) disagreements.push(key);
+  }
+  for (const key of ["taxableAmount", "cgst", "sgst", "igst", "totalAmount"]) {
+    if (!valuePresent(aiFields[key]) || !valuePresent(ocrFields[key])) continue;
+    if (Math.abs(Number(aiFields[key] || 0) - Number(ocrFields[key] || 0)) > 1) disagreements.push(key);
+  }
+  return disagreements;
+}
+
+function mergeExtractionConfidence(aiConfidence, ocrConfidence, fields) {
+  const confidence = {};
+  for (const key of ["supplier", "invoiceNumber", "invoiceDate", "gstin", "taxableAmount", "cgst", "sgst", "igst", "totalAmount", "lineItems"]) {
+    confidence[key] = valuePresent(fields[key]) ? Math.max(aiConfidence[key] || 0, ocrConfidence[key] || 0) : 0;
+  }
+  confidence.ocrOverall = ocrConfidence.ocrOverall || 0;
+  confidence.aiOverall = aiConfidence.aiOverall || 0;
+  return confidence;
+}
+
+function addExtractionValidation(validation, extractionMeta) {
+  const next = {
+    errors: [...validation.errors],
+    warnings: [...validation.warnings],
+    checks: [...validation.checks],
+    duplicateId: validation.duplicateId
+  };
+
+  if (extractionMeta.aiAttempted) {
+    if (extractionMeta.aiError) {
+      next.warnings.push(extractionMeta.aiError);
+      next.checks.push({
+        id: "ai-extraction",
+        label: "AI extraction",
+        status: "warn",
+        detail: "OpenAI vision was unavailable, so OCR fallback populated the review."
+      });
+    } else {
+      next.checks.push({
+        id: "ai-extraction",
+        label: "AI extraction",
+        status: "pass",
+        detail: `Structured vision extraction completed with ${extractionMeta.aiModel}.`
+      });
+    }
+  }
+
+  if (extractionMeta.disagreements.length) {
+    next.warnings.push(`AI/OCR cross-check needs review: ${extractionMeta.disagreements.join(", ")} differ.`);
+  }
+  next.checks.push({
+    id: "ai-ocr-cross-check",
+    label: "AI/OCR cross-check",
+    status: extractionMeta.disagreements.length ? "warn" : extractionMeta.aiAttempted && !extractionMeta.aiError ? "pass" : "warn",
+    detail: extractionMeta.disagreements.length
+      ? `${extractionMeta.disagreements.length} key field${extractionMeta.disagreements.length === 1 ? "" : "s"} differed.`
+      : extractionMeta.aiAttempted && !extractionMeta.aiError
+        ? "AI and OCR agreed on the available key fields."
+        : "Only OCR evidence was available."
+  });
+
+  if (extractionMeta.unreadableFields.length) {
+    next.warnings.push(`AI marked unreadable fields: ${extractionMeta.unreadableFields.join(", ")}.`);
+  }
+
+  return next;
+}
+
+function extractionReviewState(fields, validation, extractionMeta) {
+  const missingRequired = !fields.supplier || !fields.invoiceNumber || !fields.totalAmount;
+  if (missingRequired || extractionMeta.unreadableFields.length >= 3) return "missing_unreadable";
+  if (validation.errors.length || validation.warnings.length || extractionMeta.disagreements.length || extractionMeta.aiError) return "review_required";
+  return "high_confidence";
+}
+
+function extractionMetaFromInvoice(invoice) {
+  const ai = invoice.aiExtraction || {};
+  return {
+    aiAttempted: Boolean(ai.attempted),
+    aiModel: ai.model || OPENAI_INVOICE_MODEL,
+    aiResponseId: ai.responseId || null,
+    aiError: ai.error || "",
+    disagreements: Array.isArray(ai.disagreements) ? ai.disagreements : [],
+    unreadableFields: Array.isArray(ai.unreadableFields) ? ai.unreadableFields : []
+  };
+}
+
+function validateInvoiceRecord(invoice, invoices) {
+  const meta = extractionMetaFromInvoice(invoice);
+  let validation = validateInvoice(invoice.fields || {}, invoices, invoice.id);
+  validation = addExtractionValidation(validation, meta);
+  invoice.extractionState = extractionReviewState(invoice.fields || {}, validation, meta);
+  return validation;
+}
+
+async function buildHybridExtraction(upload, extraction, preferAi) {
+  const ocrParsed = extractInvoiceFields(extraction.text, extraction.confidence);
+  const meta = {
+    aiAttempted: Boolean(preferAi),
+    aiModel: OPENAI_INVOICE_MODEL,
+    aiResponseId: null,
+    aiError: "",
+    disagreements: [],
+    unreadableFields: []
+  };
+  if (!preferAi) {
+    return {
+      fields: ocrParsed.fields,
+      confidence: ocrParsed.confidence,
+      rawText: ocrParsed.rawText,
+      extractionMode: extraction.mode || "ocr",
+      aiExtraction: meta
+    };
+  }
+
+  try {
+    const aiResult = await extractInvoiceWithOpenAI(upload, extraction.text);
+    const aiParsed = aiToParsedFields(aiResult.invoice, extraction.confidence);
+    meta.aiModel = aiResult.model;
+    meta.aiResponseId = aiResult.responseId;
+    meta.unreadableFields = Array.isArray(aiResult.invoice.unreadable_fields) ? aiResult.invoice.unreadable_fields.filter(Boolean) : [];
+    meta.disagreements = compareExtractionFields(aiParsed.fields, ocrParsed.fields);
+    const fields = preferFields(aiParsed, ocrParsed);
+    return {
+      fields,
+      confidence: mergeExtractionConfidence(aiParsed.confidence, ocrParsed.confidence, fields),
+      rawText: ocrParsed.rawText,
+      extractionMode: "hybrid-ai-vision",
+      aiExtraction: { ...meta, raw: aiResult.invoice }
+    };
+  } catch (error) {
+    meta.aiError = error.message || "OpenAI extraction failed; OCR fallback was used.";
+    return {
+      fields: ocrParsed.fields,
+      confidence: { ...ocrParsed.confidence, aiOverall: 0 },
+      rawText: ocrParsed.rawText,
+      extractionMode: `${extraction.mode || "ocr"}-fallback`,
+      aiExtraction: meta
+    };
+  }
+}
+
 function validateInvoice(fields, invoices, currentId) {
   const errors = [];
   const warnings = [];
@@ -820,7 +1250,7 @@ function createTallyXml(invoice, mappings) {
 async function readValidatedInvoices() {
   const invoices = await readJson(INVOICES_FILE, []);
   for (const invoice of invoices) {
-    invoice.validation = validateInvoice(invoice.fields || {}, invoices, invoice.id);
+    invoice.validation = validateInvoiceRecord(invoice, invoices);
   }
   await writeJson(INVOICES_FILE, invoices);
   return invoices;
@@ -886,9 +1316,12 @@ async function handleUpload(req, res) {
     throw error;
   }
 
-  const parsed = extractInvoiceFields(extraction.text, extraction.confidence);
+  const preferAi = fields.preferAi === "true";
+  const parsed = await buildHybridExtraction(upload, extraction, preferAi);
   const invoices = await readJson(INVOICES_FILE, []);
-  const validation = validateInvoice(parsed.fields, invoices, id);
+  let validation = validateInvoice(parsed.fields, invoices, id);
+  validation = addExtractionValidation(validation, parsed.aiExtraction);
+  const extractionState = extractionReviewState(parsed.fields, validation, parsed.aiExtraction);
   const invoice = {
     id,
     status: "pending_review",
@@ -897,10 +1330,20 @@ async function handleUpload(req, res) {
     originalName: upload.filename || storedName,
     storedName,
     contentType: upload.contentType,
-    extractionMode: extraction.mode || "ocr",
+    extractionMode: parsed.extractionMode,
+    extractionState,
     rawText: parsed.rawText,
     fields: parsed.fields,
     confidence: parsed.confidence,
+    aiExtraction: {
+      attempted: parsed.aiExtraction.aiAttempted,
+      model: parsed.aiExtraction.aiModel,
+      responseId: parsed.aiExtraction.aiResponseId,
+      error: parsed.aiExtraction.aiError,
+      disagreements: parsed.aiExtraction.disagreements,
+      unreadableFields: parsed.aiExtraction.unreadableFields,
+      raw: parsed.aiExtraction.raw || null
+    },
     validation,
     review: {
       reviewer: "",
@@ -909,7 +1352,13 @@ async function handleUpload(req, res) {
     auditTrail: []
   };
   audit(invoice, "uploaded", { originalName: invoice.originalName, extractionMode: invoice.extractionMode });
-  audit(invoice, "extracted", { ocrOverall: invoice.confidence.ocrOverall, warnings: validation.warnings.length, errors: validation.errors.length });
+  audit(invoice, "extracted", {
+    ocrOverall: invoice.confidence.ocrOverall,
+    aiOverall: invoice.confidence.aiOverall || 0,
+    extractionState,
+    warnings: validation.warnings.length,
+    errors: validation.errors.length
+  });
   invoices.unshift(invoice);
   await writeJson(INVOICES_FILE, invoices);
   return json(res, 201, invoice);
@@ -939,7 +1388,7 @@ async function updateInvoice(req, res, id, action = "save") {
     notes: payload.notes || invoice.review.notes || ""
   };
   invoice.updatedAt = nowIso();
-  invoice.validation = validateInvoice(invoice.fields, invoices, id);
+  invoice.validation = validateInvoiceRecord(invoice, invoices);
   audit(invoice, "review_updated", { reviewer: invoice.review.reviewer || "unassigned" });
 
   if (action === "save" && invoice.status === "approved" && previousFields !== JSON.stringify(invoice.fields)) {
@@ -1067,7 +1516,16 @@ async function router(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const route = url.pathname;
 
-    if (route === "/api/health") return json(res, 200, { ok: true, app: "tally-ocr-mvp" });
+    if (route === "/api/health") {
+      return json(res, 200, {
+        ok: true,
+        app: "tally-ocr-mvp",
+        features: {
+          aiExtraction: openAiConfigured(),
+          aiModel: OPENAI_INVOICE_MODEL
+        }
+      });
+    }
     if (route === "/api/invoices" && req.method === "GET") return json(res, 200, await readValidatedInvoices());
     if (route === "/api/invoices" && req.method === "POST") return await handleUpload(req, res);
     if (route === "/api/tally/status" && req.method === "GET") return await tallyConnectionStatus(res);
@@ -1118,5 +1576,18 @@ if (require.main === module) {
     console.log("No data is posted to Tally automatically. Approved invoices are export proposals only.");
   });
 }
+
+router._internals = {
+  INVOICE_SCHEMA,
+  addExtractionValidation,
+  aiToParsedFields,
+  compareExtractionFields,
+  extractionReviewState,
+  extractInvoiceFields,
+  normalizeGstin,
+  validateInvoice,
+  validateInvoiceRecord,
+  validGstinChecksum
+};
 
 module.exports = router;

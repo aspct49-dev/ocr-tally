@@ -1,6 +1,6 @@
 # Tally OCR MVP
 
-This is a local working MVP for OCR-based invoice and bill intake for Tally. It supports camera capture, image upload, PDF upload, OCR/text extraction, human review, validation, duplicate checks, original-file retention, audit trail, configurable ledger/party mappings, and approved exports to Tally XML, CSV, and JSON.
+This is a local working MVP for OCR-based invoice and bill intake for Tally. It supports camera capture, image upload, PDF upload, hybrid AI/OCR extraction, human review, validation, duplicate checks, original-file retention, audit trail, configurable ledger/party mappings, and approved exports to Tally XML, CSV, and JSON.
 
 ## Requirement source
 
@@ -39,6 +39,20 @@ The current demo presents the invoice workflow as a finance operations control d
 - Line items where the OCR text follows a recognizable item/qty/rate/amount pattern
 - Field confidence scores and overall OCR confidence
 
+## Hybrid AI extraction
+
+When `OPENAI_API_KEY` is configured, uploads use a server-side OpenAI vision extraction pass with a strict JSON schema. The browser still runs local OCR first and sends the raw OCR text to the server as supporting evidence. The server then:
+
+- Sends the image or PDF to OpenAI from the backend only.
+- Requires structured invoice JSON with nullable fields rather than guessed values.
+- Normalizes the AI result into the existing review fields and line-item table.
+- Keeps OCR as fallback if OpenAI is not configured, times out, or returns an error.
+- Cross-checks AI and OCR on invoice number, date, GSTIN, taxable value, taxes, and total amount.
+- Labels each extraction as `high_confidence`, `review_required`, or `missing_unreadable`.
+- Preserves the existing human approval gate before any Tally XML, CSV, or JSON export.
+
+The OpenAI API key is never sent to the browser. The frontend only sees whether AI extraction is available and the configured model name.
+
 ## Validation and controls
 
 - Flags missing supplier, invoice number, and total amount as errors.
@@ -69,11 +83,22 @@ http://localhost:4173
 
 Optional environment variables:
 
+- `OPENAI_API_KEY`: enables the secure server-side AI extraction flow.
+- `OPENAI_INVOICE_MODEL`: OpenAI vision model to use. Defaults to `gpt-5.6-terra`.
+- `OPENAI_TIMEOUT_MS`: AI extraction timeout in milliseconds. Defaults to `45000`.
 - `PORT`: change the local port. Example: `$env:PORT=4180`
 - `DATA_DIR`: store invoices in a custom writable directory.
 - `PYTHON`: path to Python with `pdfplumber` installed for text PDFs.
 - `PDFTOPPM`: path to `pdftoppm` for OCR of scanned PDFs.
 - `NODE_MODULES_DIR`: folder containing `tesseract.js`.
+
+PowerShell setup example:
+
+```powershell
+Copy-Item .env.example .env
+$env:OPENAI_API_KEY="<your-openai-api-key>"
+npm start
+```
 
 ## Vercel deployment
 
@@ -127,13 +152,23 @@ Validate ledger names, voucher type, tax ledgers, and company-specific Tally con
 
 ## Verification
 
-The MVP was tested on desktop and mobile layouts and with two public GST invoice PDFs. See [TEST_RESULTS.md](TEST_RESULTS.md) for the source links, extracted values, and control checks. The two online samples are retained in the local review queue as pending review; they were not approved or exported.
+Run the static checks and fixture tests:
+
+```powershell
+npm run check
+npm test
+```
+
+The AI fixture in `test/sample-ai-invoice.json` mirrors the referenced uploaded sample bill values and verifies normalization, GST/math validation, and AI/OCR review-state behavior without calling OpenAI.
+
+The MVP was also tested on desktop and mobile layouts and with two public GST invoice PDFs. See [TEST_RESULTS.md](TEST_RESULTS.md) for the source links, extracted values, and control checks. The two online samples are retained in the local review queue as pending review; they were not approved or exported.
 
 ## Limitations
 
 - OCR accuracy depends on scan quality, language, and invoice layout.
-- The parser uses deterministic invoice heuristics. For production, train supplier-specific templates or use a managed IDP engine.
+- The parser uses deterministic invoice heuristics as fallback and as an AI cross-check. For production, add supplier-specific test fixtures and approval workflows before broad rollout.
 - PDF support extracts embedded text first. Scanned PDFs are rendered to images with `pdftoppm` when available.
+- The referenced `/mnt/data/test bill.webp` attachment is not stored in this repository; add the actual file to a private test fixture location if you want live image regression tests.
 - No purchase-order matching or approval routing integration is included yet.
 - User authentication and role-based segregation of duties are represented by the reviewer workflow but are not production authentication.
 - The GSTIN checksum check is an offline structural check; it does not verify registration status with the GST portal.

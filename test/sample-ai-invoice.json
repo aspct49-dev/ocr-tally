@@ -1,0 +1,79 @@
+{
+  "supplier": {
+    "name": "Foobar Labs",
+    "gstin": "29ABCDE1234F2Z5",
+    "pan": "ABCDE1234F",
+    "address": "Karnataka"
+  },
+  "customer": {
+    "name": "Wok Studio",
+    "gstin": "29VGCED1234K2Z6",
+    "pan": null,
+    "address": "Karnataka"
+  },
+  "invoice_number": "004",
+  "invoice_date": "2019-06-19",
+  "due_date": "2019-06-28",
+  "place_of_supply": "Karnataka",
+  "line_items": [
+    {
+      "description": "Basic Web Development",
+      "hsn": "02",
+      "quantity": 10,
+      "rate": 1000,
+      "gst_rate": 18,
+      "taxable_amount": 10000,
+      "cgst": 900,
+      "sgst": 900,
+      "igst": 0,
+      "amount": 11800
+    },
+    {
+      "description": "Content Development",
+      "hsn": "02",
+      "quantity": 10,
+      "rate": 1000,
+      "gst_rate": 18,
+      "taxable_amount": 10000,
+      "cgst": 900,
+      "sgst": 900,
+      "igst": 0,
+      "amount": 11800
+    },
+    {
+      "description": "Hosting Setup",
+      "hsn": "02",
+      "quantity": 10,
+      "rate": 1000,
+      "gst_rate": 18,
+      "taxable_amount": 10000,
+      "cgst": 900,
+      "sgst": 900,
+      "igst": 0,
+      "amount": 11800
+    },
+    {
+      "description": "Maintenance",
+      "hsn": "02",
+      "quantity": 6,
+      "rate": 1000,
+      "gst_rate": 18,
+      "taxable_amount": 6000,
+      "cgst": 540,
+      "sgst": 540,
+      "igst": 0,
+      "amount": 7080
+    }
+  ],
+  "subtotal": 40000,
+  "discount": 4000,
+  "taxable_amount": 36000,
+  "cgst": 3240,
+  "sgst": 3240,
+  "igst": 0,
+  "total": 42480,
+  "early_pay_amount": 42280,
+  "currency": "INR",
+  "unreadable_fields": [],
+  "notes": "Fixture based on the referenced uploaded sample bill."
+}
