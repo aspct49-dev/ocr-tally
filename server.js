@@ -9,6 +9,27 @@ const Module = require("module");
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
+
+function loadDotEnv(filePath = path.join(ROOT, ".env")) {
+  if (!fs.existsSync(filePath)) return;
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) continue;
+    const key = trimmed.slice(0, separator).trim();
+    let value = trimmed.slice(separator + 1).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || process.env[key] !== undefined) continue;
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+loadDotEnv();
+
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
@@ -22,7 +43,7 @@ const MAPPINGS_FILE = path.join(DATA_DIR, "mappings.json");
 const PORT = Number(process.env.PORT || 4173);
 const MAX_UPLOAD_BYTES = IS_SERVERLESS ? Math.floor(4.25 * 1024 * 1024) : 25 * 1024 * 1024;
 const OPENAI_API_URL = process.env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
-const OPENAI_INVOICE_MODEL = process.env.OPENAI_INVOICE_MODEL || "gpt-5.6-terra";
+const OPENAI_INVOICE_MODEL = process.env.OPENAI_INVOICE_MODEL || "gpt-5";
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 45000);
 
 const INVOICE_SCHEMA = {
@@ -1584,6 +1605,7 @@ router._internals = {
   compareExtractionFields,
   extractionReviewState,
   extractInvoiceFields,
+  loadDotEnv,
   normalizeGstin,
   validateInvoice,
   validateInvoiceRecord,

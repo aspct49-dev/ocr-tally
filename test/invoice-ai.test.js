@@ -10,6 +10,7 @@ const {
   aiToParsedFields,
   compareExtractionFields,
   extractionReviewState,
+  loadDotEnv,
   validateInvoice,
   validGstinChecksum
 } = router._internals;
@@ -67,4 +68,19 @@ test("AI and OCR disagreements are carried into review state", () => {
     unreadableFields: []
   }), "review_required");
   assert.ok(validation.warnings.some(message => /AI\/OCR cross-check/i.test(message)));
+});
+
+test("local .env files populate missing environment values", () => {
+  const envPath = path.join(__dirname, "tmp.env");
+  const previous = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    fs.writeFileSync(envPath, "OPENAI_API_KEY=fake-test-key\nOPENAI_TIMEOUT_MS=12345\n");
+    loadDotEnv(envPath);
+    assert.equal(process.env.OPENAI_API_KEY, "fake-test-key");
+  } finally {
+    fs.rmSync(envPath, { force: true });
+    if (previous === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous;
+  }
 });

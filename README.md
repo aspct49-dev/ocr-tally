@@ -84,7 +84,7 @@ http://localhost:4173
 Optional environment variables:
 
 - `OPENAI_API_KEY`: enables the secure server-side AI extraction flow.
-- `OPENAI_INVOICE_MODEL`: OpenAI vision model to use. Defaults to `gpt-5.6-terra`.
+- `OPENAI_INVOICE_MODEL`: OpenAI vision model to use. Defaults to `gpt-5`.
 - `OPENAI_TIMEOUT_MS`: AI extraction timeout in milliseconds. Defaults to `45000`.
 - `PORT`: change the local port. Example: `$env:PORT=4180`
 - `DATA_DIR`: store invoices in a custom writable directory.
@@ -96,9 +96,13 @@ PowerShell setup example:
 
 ```powershell
 Copy-Item .env.example .env
-$env:OPENAI_API_KEY="<your-openai-api-key>"
+# Edit .env and paste your key after OPENAI_API_KEY=
 npm start
 ```
+
+After restart, the upload button should say **Scan with AI**. If it still says
+**Extract Document**, the server did not see `OPENAI_API_KEY`; stop the server,
+check `.env`, and start it again.
 
 ## Vercel deployment
 

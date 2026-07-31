@@ -61,6 +61,7 @@ Tested on 31 July 2026 with the local fixture in `test/sample-ai-invoice.json`, 
 - GSTIN control: passed by flagging the fake sample GSTIN checksum for review.
 - AI/OCR cross-check: passed by flagging deliberate invoice number and total mismatches as review-required.
 - OpenAI network call: not run in automated tests; tests do not require or expose an API key.
+- `.env` loading: added so local `OPENAI_API_KEY` setup is picked up when the Node server starts.
 
 ## Finance operations demo update
 
