@@ -42,9 +42,89 @@ const INVOICES_FILE = path.join(DATA_DIR, "invoices.json");
 const MAPPINGS_FILE = path.join(DATA_DIR, "mappings.json");
 const PORT = Number(process.env.PORT || 4173);
 const MAX_UPLOAD_BYTES = IS_SERVERLESS ? Math.floor(4.25 * 1024 * 1024) : 25 * 1024 * 1024;
-const OPENAI_API_URL = process.env.OPENAI_API_URL || "https://api.openai.com/v1/responses";
-const OPENAI_INVOICE_MODEL = process.env.OPENAI_INVOICE_MODEL || "gpt-5";
-const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 45000);
+// AI vision extraction is provider-agnostic. Any endpoint speaking either the
+// OpenAI Responses API or the far more widely supported chat/completions shape
+// works, so using a free provider is a configuration choice, not a code change.
+// Defaults are derived from whichever key is present, so an existing
+// OPENAI_API_KEY setup keeps its previous behaviour untouched.
+const AI_PROVIDER_DEFAULTS = {
+  openai: {
+    url: "https://api.openai.com/v1/responses",
+    model: "gpt-5"
+  },
+  gemini: {
+    url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    // gemini-2.5-flash is refused for keys created after its deprecation, so the
+    // default has to be a current model rather than the long-standing one.
+    model: "gemini-3.6-flash"
+  },
+  openrouter: {
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    model: "qwen/qwen2.5-vl-72b-instruct:free"
+  },
+  groq: {
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    model: "meta-llama/llama-4-scout-17b-16e-instruct"
+  },
+  ollama: {
+    url: "http://127.0.0.1:11434/v1/chat/completions",
+    model: "qwen2.5vl:7b"
+  }
+};
+
+function detectAiProvider() {
+  const explicit = (process.env.AI_PROVIDER || "").trim().toLowerCase();
+  if (explicit && AI_PROVIDER_DEFAULTS[explicit]) return explicit;
+  if (process.env.GEMINI_API_KEY) return "gemini";
+  if (process.env.OPENROUTER_API_KEY) return "openrouter";
+  if (process.env.GROQ_API_KEY) return "groq";
+  if (process.env.OPENAI_API_KEY) return "openai";
+  if (process.env.OLLAMA_HOST) return "ollama";
+  return "gemini";
+}
+
+const AI_PROVIDER = detectAiProvider();
+const AI_DEFAULTS = AI_PROVIDER_DEFAULTS[AI_PROVIDER] || AI_PROVIDER_DEFAULTS.gemini;
+
+const AI_API_URL = process.env.AI_API_URL || process.env.OPENAI_API_URL || AI_DEFAULTS.url;
+const AI_INVOICE_MODEL =
+  process.env.AI_INVOICE_MODEL || process.env.OPENAI_INVOICE_MODEL || AI_DEFAULTS.model;
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || process.env.OPENAI_TIMEOUT_MS || 45000);
+
+// Local runtimes (Ollama, LM Studio) accept any bearer token, so a missing key
+// must not disable extraction for them.
+const AI_LOCAL_PROVIDERS = new Set(["ollama"]);
+
+// Secrets pasted through Windows shells or CI web forms routinely pick up a BOM
+// or stray whitespace. Left in place they reach fetch() as a header value and
+// surface as an opaque "Cannot convert argument to a ByteString" error, so they
+// are stripped at the single point the key is read.
+function sanitizeApiKey(value) {
+  return String(value || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/[\r\n\t]/g, "")
+    .trim();
+}
+
+function aiApiKey() {
+  return sanitizeApiKey(
+    process.env.AI_API_KEY ||
+      process.env.GEMINI_API_KEY ||
+      process.env.OPENROUTER_API_KEY ||
+      process.env.GROQ_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      (AI_LOCAL_PROVIDERS.has(AI_PROVIDER) ? "local" : "")
+  );
+}
+
+// Responses and chat/completions differ in request and response shape, so the
+// transport is chosen from the endpoint rather than assumed.
+function aiUsesResponsesApi() {
+  return /\/responses\/?$/.test(AI_API_URL);
+}
+
+// Retained so existing references and log strings keep working.
+const OPENAI_INVOICE_MODEL = AI_INVOICE_MODEL;
 
 const INVOICE_SCHEMA = {
   type: "object",
@@ -706,7 +786,53 @@ function extractInvoiceFields(rawText, ocrConfidence) {
 }
 
 function openAiConfigured() {
-  return Boolean(process.env.OPENAI_API_KEY);
+  return Boolean(aiApiKey());
+}
+
+// Tesseract output on a poor scan is often noise, and feeding noise to a vision
+// model anchors it on wrong tokens instead of helping. Only pass OCR text
+// through as evidence when it actually looks like text.
+function usableOcrEvidence(text) {
+  const value = String(text || "").trim();
+  if (value.length < 40) return "";
+  const alnum = (value.match(/[a-z0-9]/gi) || []).length;
+  if (alnum / value.length < 0.55) return "";
+  return value.slice(0, 12000);
+}
+
+// Providers wrap JSON in prose or code fences when strict schemas are
+// unsupported, so parsing must tolerate both.
+function parseAiJson(text) {
+  const value = String(text || "").trim();
+  if (!value) throw new Error("AI extraction returned an empty response.");
+  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced ? fenced[1] : value).trim();
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start === -1 || end <= start) {
+      throw new Error("AI extraction did not return parsable invoice JSON.");
+    }
+    return JSON.parse(candidate.slice(start, end + 1));
+  }
+}
+
+function invoicePromptText(ocrText) {
+  const evidence = usableOcrEvidence(ocrText);
+  return [
+    "Extract this Indian GST invoice or bill for finance review.",
+    "Do not guess unreadable values; return null and list the field in unreadable_fields.",
+    "Separate supplier and customer details. Extract every visible line item.",
+    "Use YYYY-MM-DD dates and plain numeric amounts without currency symbols.",
+    "Read amounts from the document itself; do not compute totals you cannot see.",
+    evidence
+      ? `Low-confidence OCR text is supplied only as weak supporting evidence. Prefer the document image and ignore the OCR text wherever they disagree:\n${evidence}`
+      : ""
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function responseOutputText(payload) {
@@ -737,71 +863,162 @@ function documentContentForOpenAI(upload) {
   };
 }
 
+// chat/completions is the shape every free provider implements. PDFs are not
+// accepted as image parts there, so a PDF falls back to its extracted text —
+// still far better than the deterministic OCR heuristics it replaces.
+function documentContentForChat(upload) {
+  const mimeType = upload.contentType || MIME[extensionForUpload(upload)] || "application/octet-stream";
+  const isPdf = mimeType === "application/pdf" || /\.pdf$/i.test(upload.filename || "");
+  if (isPdf) return null;
+  return {
+    type: "image_url",
+    image_url: { url: `data:${mimeType};base64,${upload.buffer.toString("base64")}` }
+  };
+}
+
+function aiRequestHeaders() {
+  const headers = {
+    authorization: `Bearer ${aiApiKey()}`,
+    "content-type": "application/json"
+  };
+  if (AI_PROVIDER === "openrouter") {
+    headers["http-referer"] = process.env.OPENROUTER_SITE_URL || "http://localhost:4173";
+    headers["x-title"] = "tally-ocr-mvp";
+  }
+  return headers;
+}
+
+function chatRequestBody(upload, ocrText, useStrictSchema) {
+  const documentPart = documentContentForChat(upload);
+  const evidence = usableOcrEvidence(ocrText);
+  if (!documentPart && !evidence) {
+    const error = new Error(
+      "This PDF produced no extractable text and cannot be sent as an image to the configured AI provider."
+    );
+    error.statusCode = 422;
+    throw error;
+  }
+
+  const content = [{ type: "text", text: invoicePromptText(ocrText) }];
+  if (documentPart) content.push(documentPart);
+
+  const body = {
+    model: AI_INVOICE_MODEL,
+    max_tokens: 8192,
+    temperature: 0,
+    messages: [{ role: "user", content }]
+  };
+
+  if (useStrictSchema) {
+    body.response_format = {
+      type: "json_schema",
+      json_schema: { name: "gst_invoice", strict: true, schema: INVOICE_SCHEMA }
+    };
+  } else {
+    // Providers that reject strict schemas still honour plain JSON mode.
+    body.response_format = { type: "json_object" };
+    body.messages[0].content[0].text +=
+      `\n\nReturn a single JSON object matching exactly this JSON Schema. ` +
+      `Include every required key, using null for anything unreadable. ` +
+      `Return no prose and no code fences.\n${JSON.stringify(INVOICE_SCHEMA)}`;
+  }
+
+  return body;
+}
+
+async function postAiJson(body, signal) {
+  const response = await fetch(AI_API_URL, {
+    method: "POST",
+    headers: aiRequestHeaders(),
+    body: JSON.stringify(body),
+    signal
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function extractInvoiceViaChat(upload, ocrText, signal) {
+  let { response, payload } = await postAiJson(chatRequestBody(upload, ocrText, true), signal);
+
+  // Strict json_schema support varies across free providers; retry once in plain
+  // JSON mode rather than dropping straight to the OCR fallback.
+  if (!response.ok && response.status >= 400 && response.status < 500) {
+    ({ response, payload } = await postAiJson(chatRequestBody(upload, ocrText, false), signal));
+  }
+
+  if (!response.ok) {
+    const message = payload.error?.message || `AI extraction failed with HTTP ${response.status}.`;
+    const error = new Error(message);
+    error.statusCode = response.status >= 500 ? 502 : 422;
+    throw error;
+  }
+
+  const output = payload.choices?.[0]?.message?.content;
+  if (!output) throw new Error("AI extraction returned no structured invoice data.");
+  return {
+    invoice: parseAiJson(output),
+    model: payload.model || AI_INVOICE_MODEL,
+    responseId: payload.id || null
+  };
+}
+
+async function extractInvoiceViaResponses(upload, ocrText, signal) {
+  const { response, payload } = await postAiJson(
+    {
+      model: AI_INVOICE_MODEL,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: invoicePromptText(ocrText) },
+            documentContentForOpenAI(upload)
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "gst_invoice",
+          strict: true,
+          schema: INVOICE_SCHEMA
+        }
+      }
+    },
+    signal
+  );
+
+  if (!response.ok) {
+    const message = payload.error?.message || `AI extraction failed with HTTP ${response.status}.`;
+    const error = new Error(message);
+    error.statusCode = response.status >= 500 ? 502 : 422;
+    throw error;
+  }
+
+  const output = responseOutputText(payload);
+  if (!output) throw new Error("AI extraction returned no structured invoice data.");
+  return {
+    invoice: parseAiJson(output),
+    model: payload.model || AI_INVOICE_MODEL,
+    responseId: payload.id || null
+  };
+}
+
 async function extractInvoiceWithOpenAI(upload, ocrText = "") {
   if (!openAiConfigured()) {
-    const error = new Error("OPENAI_API_KEY is not configured; OCR fallback was used.");
-    error.code = "OPENAI_NOT_CONFIGURED";
+    const error = new Error("No AI API key is configured; OCR fallback was used.");
+    error.code = "AI_NOT_CONFIGURED";
     throw error;
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
   try {
-    const response = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        model: OPENAI_INVOICE_MODEL,
-        input: [{
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: [
-                "Extract this Indian GST invoice or bill for finance review.",
-                "Do not guess unreadable values; return null and list the field in unreadable_fields.",
-                "Separate supplier and customer details. Extract every visible line item.",
-                "Use YYYY-MM-DD dates and plain numeric amounts without currency symbols.",
-                "If OCR text is supplied, use it only as supporting evidence and prefer the document image/PDF layout.",
-                ocrText ? `Supporting OCR text:\n${ocrText.slice(0, 12000)}` : ""
-              ].filter(Boolean).join("\n\n")
-            },
-            documentContentForOpenAI(upload)
-          ]
-        }],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "gst_invoice",
-            strict: true,
-            schema: INVOICE_SCHEMA
-          }
-        }
-      }),
-      signal: controller.signal
-    });
-
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = payload.error?.message || `OpenAI extraction failed with HTTP ${response.status}.`;
-      const error = new Error(message);
-      error.statusCode = response.status >= 500 ? 502 : 422;
-      throw error;
-    }
-
-    const output = responseOutputText(payload);
-    if (!output) throw new Error("OpenAI extraction returned no structured invoice data.");
-    return {
-      invoice: JSON.parse(output),
-      model: payload.model || OPENAI_INVOICE_MODEL,
-      responseId: payload.id || null
-    };
+    return aiUsesResponsesApi()
+      ? await extractInvoiceViaResponses(upload, ocrText, controller.signal)
+      : await extractInvoiceViaChat(upload, ocrText, controller.signal);
   } catch (error) {
     if (error.name === "AbortError") {
-      throw new Error("OpenAI extraction timed out; OCR fallback was used.");
+      throw new Error("AI extraction timed out; OCR fallback was used.");
     }
     throw error;
   } finally {
@@ -953,7 +1170,7 @@ function addExtractionValidation(validation, extractionMeta) {
         id: "ai-extraction",
         label: "AI extraction",
         status: "warn",
-        detail: "OpenAI vision was unavailable, so OCR fallback populated the review."
+        detail: "AI vision was unavailable, so OCR fallback populated the review."
       });
     } else {
       next.checks.push({
@@ -1599,14 +1816,23 @@ if (require.main === module) {
 }
 
 router._internals = {
+  AI_PROVIDER_DEFAULTS,
   INVOICE_SCHEMA,
   addExtractionValidation,
   aiToParsedFields,
+  aiUsesResponsesApi,
+  chatRequestBody,
   compareExtractionFields,
+  detectAiProvider,
   extractionReviewState,
   extractInvoiceFields,
+  extractInvoiceWithAi: extractInvoiceWithOpenAI,
+  invoicePromptText,
   loadDotEnv,
   normalizeGstin,
+  parseAiJson,
+  sanitizeApiKey,
+  usableOcrEvidence,
   validateInvoice,
   validateInvoiceRecord,
   validGstinChecksum

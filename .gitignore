@@ -14,3 +14,5 @@ data/
 .DS_Store
 Thumbs.db
 
+# Vercel CLI link data and the .env.local it generates
+.vercel

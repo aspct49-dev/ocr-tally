@@ -41,17 +41,44 @@ The current demo presents the invoice workflow as a finance operations control d
 
 ## Hybrid AI extraction
 
-When `OPENAI_API_KEY` is configured, uploads use a server-side OpenAI vision extraction pass with a strict JSON schema. The browser still runs local OCR first and sends the raw OCR text to the server as supporting evidence. The server then:
+When an AI key is configured, uploads use a server-side vision extraction pass with a strict JSON schema. The browser still runs local OCR first and sends the raw OCR text to the server as supporting evidence. The server then:
 
-- Sends the image or PDF to OpenAI from the backend only.
+- Sends the image or PDF to the AI provider from the backend only.
 - Requires structured invoice JSON with nullable fields rather than guessed values.
 - Normalizes the AI result into the existing review fields and line-item table.
-- Keeps OCR as fallback if OpenAI is not configured, times out, or returns an error.
+- Keeps OCR as fallback if no provider is configured, the call times out, or it returns an error.
 - Cross-checks AI and OCR on invoice number, date, GSTIN, taxable value, taxes, and total amount.
 - Labels each extraction as `high_confidence`, `review_required`, or `missing_unreadable`.
 - Preserves the existing human approval gate before any Tally XML, CSV, or JSON export.
 
-The OpenAI API key is never sent to the browser. The frontend only sees whether AI extraction is available and the configured model name.
+The API key is never sent to the browser. The frontend only sees whether AI extraction is available and the configured model name.
+
+### Choosing a provider
+
+Extraction is provider-agnostic. The server speaks both the OpenAI Responses API and the `chat/completions` shape that nearly every other provider implements, and it picks the endpoint, default model, and transport from whichever key it finds. Set **one** key:
+
+| Provider | Env var | Default model | Cost |
+| --- | --- | --- | --- |
+| Google Gemini | `GEMINI_API_KEY` | `gemini-3.6-flash` | Free tier |
+| OpenRouter | `OPENROUTER_API_KEY` | `qwen/qwen2.5-vl-72b-instruct:free` | Free tier, rate limited |
+| Groq | `GROQ_API_KEY` | `meta-llama/llama-4-scout-17b-16e-instruct` | Free tier |
+| Ollama (local) | none, set `AI_PROVIDER=ollama` | `qwen2.5vl:7b` | Free, fully offline |
+| OpenAI | `OPENAI_API_KEY` | `gpt-5` | Paid |
+
+Gemini is the recommended default for this POC: a free tier, strong document understanding, and native structured-output support. Get a key at <https://aistudio.google.com/apikey>, then:
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env and paste your key after GEMINI_API_KEY=
+npm start
+```
+
+`AI_PROVIDER`, `AI_INVOICE_MODEL`, `AI_API_URL`, and `AI_TIMEOUT_MS` override any of the above. `AI_API_URL` accepts any OpenAI-compatible `chat/completions` endpoint, so LM Studio and vLLM work without code changes.
+
+Two caveats worth knowing before this handles real supplier data:
+
+- **Free tiers are not private.** Google's free Gemini tier may use submitted content to improve its products. That is fine for test bills, but for real invoices use a paid tier with data-retention guarantees, or run Ollama locally where nothing leaves the machine.
+- **PDFs are handled differently on `chat/completions` providers.** They do not accept PDF file parts, so a PDF is sent as its extracted text rather than as an image. Text PDFs extract cleanly; scanned PDFs are rendered to images by the browser first. Only the OpenAI Responses path sends the PDF itself.
 
 ## Validation and controls
 
@@ -83,26 +110,21 @@ http://localhost:4173
 
 Optional environment variables:
 
-- `OPENAI_API_KEY`: enables the secure server-side AI extraction flow.
-- `OPENAI_INVOICE_MODEL`: OpenAI vision model to use. Defaults to `gpt-5`.
-- `OPENAI_TIMEOUT_MS`: AI extraction timeout in milliseconds. Defaults to `45000`.
+- `GEMINI_API_KEY` (or `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`): enables the secure server-side AI extraction flow. See [Choosing a provider](#choosing-a-provider).
+- `AI_PROVIDER`: force a provider — `gemini`, `openrouter`, `groq`, `ollama`, or `openai`.
+- `AI_INVOICE_MODEL`: override the vision model. Defaults per provider.
+- `AI_API_URL`: any OpenAI-compatible endpoint.
+- `AI_TIMEOUT_MS`: AI extraction timeout in milliseconds. Defaults to `45000`.
 - `PORT`: change the local port. Example: `$env:PORT=4180`
 - `DATA_DIR`: store invoices in a custom writable directory.
 - `PYTHON`: path to Python with `pdfplumber` installed for text PDFs.
 - `PDFTOPPM`: path to `pdftoppm` for OCR of scanned PDFs.
 - `NODE_MODULES_DIR`: folder containing `tesseract.js`.
 
-PowerShell setup example:
-
-```powershell
-Copy-Item .env.example .env
-# Edit .env and paste your key after OPENAI_API_KEY=
-npm start
-```
-
 After restart, the upload button should say **Scan with AI**. If it still says
-**Extract Document**, the server did not see `OPENAI_API_KEY`; stop the server,
-check `.env`, and start it again.
+**Extract Document**, the server did not see a provider key; stop the server,
+check `.env`, and start it again. `GET /api/health` reports which model is
+active.
 
 ## Vercel deployment
 
@@ -162,6 +184,19 @@ Run the static checks and fixture tests:
 npm run check
 npm test
 ```
+
+Neither makes a network call. To verify the configured AI provider end to end:
+
+```powershell
+npm run check:ai
+```
+
+That renders a synthetic GST invoice with known values, sends it through the
+same extraction path the upload route uses, and reports which fields came back
+correct. On a clean synthetic invoice a capable model should match all eight
+fields and all three line items; anything less means the provider or model is a
+poor fit, and it is worth fixing that before testing real bills. It exits
+non-zero on any mismatch, so it works in CI.
 
 The AI fixture in `test/sample-ai-invoice.json` mirrors the referenced uploaded sample bill values and verifies normalization, GST/math validation, and AI/OCR review-state behavior without calling OpenAI.
 

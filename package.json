@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js",
+    "check": "node --check server.js && node --check public/app.js && node --check scripts/check-ai.js",
+    "check:ai": "node scripts/check-ai.js",
     "test": "node --test"
   },
   "dependencies": {
